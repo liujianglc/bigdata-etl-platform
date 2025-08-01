@@ -13,9 +13,15 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # 检查Docker Compose
-if ! command -v docker-compose &> /dev/null; then
+if ! command -v docker-compose &> /dev/null && ! command -v docker &> /dev/null; then
     echo "❌ Docker Compose未安装，请先安装Docker Compose"
     exit 1
+fi
+
+# 检查docker-compose权限并尝试修复
+if [ -f "/usr/local/bin/docker-compose" ] && [ ! -x "/usr/local/bin/docker-compose" ]; then
+    echo "🔧 修复docker-compose权限..."
+    sudo chmod +x /usr/local/bin/docker-compose
 fi
 
 # 检查内存
@@ -59,14 +65,40 @@ echo "3. 自定义部署"
 
 read -p "请选择 (1-3): " deploy_mode
 
+# 检测docker-compose命令
+DOCKER_COMPOSE_CMD="docker-compose"
+if ! command -v docker-compose &> /dev/null; then
+    if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+        DOCKER_COMPOSE_CMD="docker compose"
+        echo "💡 使用 Docker Compose V2"
+    else
+        echo "❌ 无法找到可用的docker-compose命令"
+        echo "🔧 尝试运行权限修复脚本: ./fix-permissions.sh"
+        exit 1
+    fi
+fi
+
 case $deploy_mode in
     1)
         echo "🚀 启动完整大数据平台..."
-        ./start.sh
+        if [ -f "./start.sh" ]; then
+            # 传递docker-compose命令给start.sh
+            export DOCKER_COMPOSE_CMD
+            ./start.sh
+        else
+            echo "❌ start.sh 文件不存在"
+            exit 1
+        fi
         ;;
     2)
         echo "🚀 启动基础服务..."
-        ./start-basic.sh
+        if [ -f "./start-basic.sh" ]; then
+            export DOCKER_COMPOSE_CMD
+            ./start-basic.sh
+        else
+            echo "❌ start-basic.sh 文件不存在"
+            exit 1
+        fi
         ;;
     3)
         echo "📋 自定义部署选项："
@@ -93,14 +125,14 @@ echo "🔍 验证部署状态..."
 
 # 检查容器状态
 echo "检查Docker容器状态："
-docker-compose ps
+$DOCKER_COMPOSE_CMD ps
 
 # 检查关键服务
 services=("postgres" "mysql" "airflow-webserver")
 all_running=true
 
 for service in "${services[@]}"; do
-    if docker-compose ps $service | grep -q "Up"; then
+    if $DOCKER_COMPOSE_CMD ps $service | grep -q "Up"; then
         echo "✅ $service: 运行正常"
     else
         echo "❌ $service: 未运行"
@@ -121,7 +153,7 @@ else
 fi
 
 # 检查Spark (如果启动了)
-if docker-compose ps spark-master | grep -q "Up"; then
+if $DOCKER_COMPOSE_CMD ps spark-master | grep -q "Up"; then
     if curl -s http://localhost:8081 > /dev/null; then
         echo "✅ Spark Master UI: http://localhost:8081"
     else
@@ -130,7 +162,7 @@ if docker-compose ps spark-master | grep -q "Up"; then
 fi
 
 # 检查HDFS (如果启动了)
-if docker-compose ps namenode | grep -q "Up"; then
+if $DOCKER_COMPOSE_CMD ps namenode | grep -q "Up"; then
     if curl -s http://localhost:9870 > /dev/null; then
         echo "✅ HDFS NameNode UI: http://localhost:9870"
     else
@@ -162,9 +194,10 @@ else
     echo ""
     echo "🔧 故障排除建议："
     echo "1. 检查系统资源是否充足"
-    echo "2. 查看服务日志: docker-compose logs"
-    echo "3. 尝试重启: docker-compose restart"
-    echo "4. 运行故障排除脚本: ./troubleshoot.sh"
+    echo "2. 查看服务日志: $DOCKER_COMPOSE_CMD logs"
+    echo "3. 尝试重启: $DOCKER_COMPOSE_CMD restart"
+    echo "4. 运行权限修复: ./fix-permissions.sh"
+    echo "5. 运行故障排除脚本: ./troubleshoot.sh"
 fi
 
 echo ""
