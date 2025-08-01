@@ -5,7 +5,7 @@ networks:
 services:
   # PostgreSQL for Airflow and Hive metastore
   postgres:
-    image: m.daocloud.io/docker.io/postgres:13
+    image: docker.1ms.run/postgres:13
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
@@ -24,7 +24,7 @@ services:
 
   # Redis for Airflow Celery
   redis:
-    image: m.daocloud.io/docker.io/redis:7-alpine
+    image: docker.1ms.run/redis:7-alpine
     expose:
       - 6379
     networks:
@@ -38,7 +38,7 @@ services:
 
   # Airflow Webserver
   airflow-webserver:
-    image: m.daocloud.io/docker.io/apache/airflow:2.8.2
+    image: docker.1ms.run/apache/airflow:2.8.2
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,7 +76,7 @@ services:
 
   # Airflow Scheduler
   airflow-scheduler:
-    image: m.daocloud.io/docker.io/apache/airflow:2.8.2
+    image: docker.1ms.run/apache/airflow:2.8.2
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,7 +111,7 @@ services:
 
   # Airflow Worker
   airflow-worker:
-    image: m.daocloud.io/docker.io/apache/airflow:2.8.2
+    image: docker.1ms.run/apache/airflow:2.8.2
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,7 +146,7 @@ services:
 
   # MySQL 数据源
   mysql:
-    image: m.daocloud.io/docker.io/mysql:8.0
+    image: docker.1ms.run/mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
       MYSQL_DATABASE: source_db
