@@ -1,0 +1,36 @@
+# Development overrides for docker-compose
+# This file is automatically loaded by docker-compose
+
+version: '3.8'
+
+services:
+  # Development-specific configurations
+  airflow-webserver:
+    # Enable hot reloading for development
+    environment:
+      - AIRFLOW__WEBSERVER__RELOAD_ON_PLUGIN_CHANGE=true
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+    # Additional volume mounts for development
+    volumes:
+      - ./requirements.txt:/opt/airflow/requirements.txt:ro
+
+  airflow-scheduler:
+    environment:
+      - AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL=30
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+
+  airflow-worker:
+    environment:
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+
+  # Development database with persistent storage
+  postgres:
+    # Expose port for external connections during development
+    ports:
+      - "5432:5432"
+    
+  mysql:
+    # Add sample data volume for development
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sample_data:/docker-entrypoint-initdb.d:ro

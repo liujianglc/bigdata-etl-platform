@@ -38,7 +38,9 @@ services:
 
   # Airflow Webserver
   airflow-webserver:
-    image: docker.1ms.run/apache/airflow:2.8.2
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,7 +56,6 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -76,7 +77,9 @@ services:
 
   # Airflow Scheduler
   airflow-scheduler:
-    image: docker.1ms.run/apache/airflow:2.8.2
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,7 +95,6 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -111,7 +113,9 @@ services:
 
   # Airflow Worker
   airflow-worker:
-    image: docker.1ms.run/apache/airflow:2.8.2
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     depends_on:
       postgres:
         condition: service_healthy
@@ -127,7 +131,6 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs

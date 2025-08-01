@@ -1,0 +1,22 @@
+FROM apache/airflow:2.8.2
+
+# Switch to root to install packages
+USER root
+
+# Install system dependencies if needed
+RUN apt-get update && apt-get install -y \
+    default-mysql-client \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Switch back to airflow user
+USER airflow
+
+# Copy requirements file
+COPY requirements.txt /tmp/requirements.txt
+
+# Install Python packages from requirements file
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy any custom configurations or scripts
+COPY --chown=airflow:root setup-connections-python.py /opt/airflow/
