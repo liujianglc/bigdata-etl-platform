@@ -7,9 +7,9 @@ services:
   postgres:
     image: docker.1ms.run/postgres:13
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_MULTIPLE_DATABASES: hive_metastore
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -45,16 +45,16 @@ services:
       redis:
         condition: service_healthy
     environment:
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
       AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
-      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
-      AIRFLOW__CORE__FERNET_KEY: ''
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:${REDIS_PORT}/0
+      AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: '${AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION}'
+      AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-      _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow-providers-apache-spark apache-airflow-providers-mysql mysql-connector-python
+      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -63,7 +63,7 @@ services:
       - ./spark_jobs:/opt/airflow/spark_jobs
       - ./setup-connections-python.py:/opt/airflow/setup-connections-python.py
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_WEBSERVER_PORT}:8080"
     command: webserver
     networks:
       - data-pipeline
@@ -83,16 +83,16 @@ services:
       redis:
         condition: service_healthy
     environment:
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
       AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
-      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
-      AIRFLOW__CORE__FERNET_KEY: ''
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:${REDIS_PORT}/0
+      AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: '${AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION}'
+      AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-      _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow-providers-apache-spark apache-airflow-providers-mysql mysql-connector-python
+      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -118,16 +118,16 @@ services:
       redis:
         condition: service_healthy
     environment:
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
       AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
-      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
-      AIRFLOW__CORE__FERNET_KEY: ''
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:${REDIS_PORT}/0
+      AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: '${AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION}'
+      AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-      _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow-providers-apache-spark apache-airflow-providers-mysql mysql-connector-python
+      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -148,12 +148,12 @@ services:
   mysql:
     image: docker.1ms.run/mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: source_db
-      MYSQL_USER: etl_user
-      MYSQL_PASSWORD: etl_pass
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
-      - "3306:3306"
+      - "${MYSQL_PORT}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     networks:
@@ -168,13 +168,13 @@ services:
     image: docker.1ms.run/bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
     hostname: namenode
     environment:
-      - CLUSTER_NAME=test
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - CLUSTER_NAME=${CLUSTER_NAME}
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
     volumes:
       - hadoop_namenode:/hadoop/dfs/name
     ports:
-      - "9870:9870"  # HDFS Web UI
-      - "9000:9000"  # HDFS port
+      - "${HDFS_UI_PORT}:9870"  # HDFS Web UI
+      - "${HDFS_NAMENODE_PORT}:9000"  # HDFS port
     networks:
       - data-pipeline
 
@@ -184,7 +184,7 @@ services:
     depends_on:
       - namenode
     environment:
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
     volumes:
       - hadoop_datanode:/hadoop/dfs/data
     networks:
@@ -201,11 +201,11 @@ services:
     environment:
       - HIVE_SITE_CONF_javax_jdo_option_ConnectionURL=jdbc:postgresql://postgres:5432/hive_metastore
       - HIVE_SITE_CONF_javax_jdo_option_ConnectionDriverName=org.postgresql.Driver
-      - HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName=hive
-      - HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword=hive
+      - HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName=${HIVE_METASTORE_USER}
+      - HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword=${HIVE_METASTORE_PASSWORD}
       - HIVE_SITE_CONF_hive_metastore_uris=thrift://hive-metastore:9083
     ports:
-      - "9083:9083"
+      - "${HIVE_METASTORE_PORT}:9083"
     networks:
       - data-pipeline
 
@@ -216,12 +216,12 @@ services:
       - namenode
     environment:
       - INIT_DAEMON_STEP=setup_spark
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
     volumes:
       - ./spark_jobs:/opt/spark-jobs
     ports:
-      - "8081:8080"  # Spark Web UI
-      - "7077:7077"  # Spark Master port
+      - "${SPARK_UI_PORT}:8080"  # Spark Web UI
+      - "${SPARK_MASTER_PORT}:7077"  # Spark Master port
     networks:
       - data-pipeline
 
@@ -231,10 +231,10 @@ services:
     depends_on:
       - spark-master
     environment:
-      - SPARK_MASTER=spark://spark-master:7077
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-      - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=1g
+      - SPARK_MASTER=spark://${SPARK_MASTER_HOST}:7077
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
+      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
+      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY}
     volumes:
       - ./spark_jobs:/opt/spark-jobs
     networks:
