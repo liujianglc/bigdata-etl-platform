@@ -1,4 +1,4 @@
-FROM apache/airflow:2.8.2
+FROM docker.1ms.run/apache/airflow:2.8.2
 
 # Switch to root to install packages
 USER root
