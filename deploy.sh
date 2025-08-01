@@ -91,15 +91,18 @@ build_custom_image() {
     print_info "构建自定义Airflow镜像..."
     
     if [ -f "Dockerfile.airflow" ] && [ -f "requirements.txt" ]; then
-        docker build -f Dockerfile.airflow -t custom-airflow:latest .
+        # Try building the custom image
+        ./build-airflow-image.sh
         if [ $? -eq 0 ]; then
             print_status "自定义Airflow镜像构建成功"
+            export USE_CUSTOM_IMAGE=true
         else
-            print_error "自定义Airflow镜像构建失败"
-            exit 1
+            print_warning "自定义镜像构建失败，将使用原始镜像和运行时安装"
+            export USE_CUSTOM_IMAGE=false
         fi
     else
-        print_warning "未找到Dockerfile.airflow或requirements.txt，跳过镜像构建"
+        print_warning "未找到Dockerfile.airflow或requirements.txt，使用原始镜像"
+        export USE_CUSTOM_IMAGE=false
     fi
 }
 
@@ -107,6 +110,14 @@ build_custom_image() {
 deploy_services() {
     local mode=$1
     local compose_files="docker-compose.yml"
+    
+    # Add fallback if custom image build failed
+    if [ "$USE_CUSTOM_IMAGE" = "false" ]; then
+        if [ -f "docker-compose.fallback.yml" ]; then
+            compose_files="$compose_files -f docker-compose.fallback.yml"
+            print_info "使用原始镜像和运行时安装模式"
+        fi
+    fi
     
     case $mode in
         "dev"|"development")
@@ -125,6 +136,8 @@ deploy_services() {
             print_info "启动默认环境..."
             ;;
     esac
+    
+    print_info "使用配置文件: $compose_files"
     
     # Start services
     $DOCKER_COMPOSE_CMD $compose_files up -d

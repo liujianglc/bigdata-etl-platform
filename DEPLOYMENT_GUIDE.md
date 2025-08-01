@@ -2,19 +2,31 @@
 
 ## 🚀 快速开始
 
-### 方法1: 使用新的部署脚本 (推荐)
+### 方法1: 快速启动 (最简单，推荐新手)
+```bash
+# 一键启动，自动选择最佳方案
+./quick-start.sh
+```
+
+### 方法2: 完整部署脚本
 ```bash
 # 开发环境部署
 ./deploy.sh --mode dev
 
-# 生产环境部署
+# 生产环境部署  
 ./deploy.sh --mode prod
 
-# 跳过镜像构建 (如果已经构建过)
+# 跳过镜像构建
 ./deploy.sh --skip-build
 ```
 
-### 方法2: 使用原有脚本
+### 方法3: 原始镜像 (最稳定)
+```bash
+# 使用原始镜像 + 运行时安装
+docker-compose -f docker-compose.yml -f docker-compose.fallback.yml up -d
+```
+
+### 方法4: 传统脚本
 ```bash
 ./quick-deploy.sh
 ```
@@ -110,10 +122,36 @@ docker compose down
 
 ## 🔍 故障排除
 
+### 镜像构建问题
+
+1. **Docker构建失败**
+   ```bash
+   # 测试构建环境
+   ./test-build.sh
+   
+   # 尝试不同构建策略
+   ./build-airflow-image.sh
+   
+   # 使用原始镜像作为后备
+   docker-compose -f docker-compose.yml -f docker-compose.fallback.yml up -d
+   ```
+
+2. **依赖冲突**
+   ```bash
+   # 使用简化版Dockerfile
+   docker build -f Dockerfile.airflow.simple -t custom-airflow:latest .
+   
+   # 或者完全跳过自定义镜像
+   ./quick-start.sh  # 选择选项1
+   ```
+
 ### 常见问题
 
 1. **端口冲突**
    ```bash
+   # 检查端口占用
+   netstat -tulpn | grep :8080
+   
    # 修改 .env 文件中的端口配置
    AIRFLOW_WEBSERVER_PORT=8090
    SPARK_UI_PORT=8091
@@ -125,9 +163,8 @@ docker compose down
    free -h
    df -h
    
-   # 减少Spark worker内存
-   # 编辑 .env 文件
-   SPARK_WORKER_MEMORY=1g
+   # 启动基础服务only
+   ./quick-start.sh  # 选择选项3
    ```
 
 3. **权限问题**
@@ -135,6 +172,17 @@ docker compose down
    # 修复目录权限
    sudo chown -R $USER:$USER logs/
    chmod -R 755 logs/
+   chmod -R 777 logs/  # Airflow需要写权限
+   ```
+
+4. **服务启动慢**
+   ```bash
+   # 查看启动日志
+   docker-compose logs -f airflow-webserver
+   
+   # 等待更长时间（首次启动需要初始化数据库）
+   sleep 60
+   curl http://localhost:8080/health
    ```
 
 4. **镜像构建失败**

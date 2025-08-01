@@ -1,0 +1,21 @@
+# Fallback configuration using original images with runtime installation
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.fallback.yml up
+
+version: '3.8'
+
+services:
+  # Fallback to original image with runtime installation
+  airflow-webserver:
+    image: docker.1ms.run/apache/airflow:2.8.2
+    environment:
+      _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-apache-spark apache-airflow-providers-mysql mysql-connector-python"
+
+  airflow-scheduler:
+    image: docker.1ms.run/apache/airflow:2.8.2
+    environment:
+      _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-apache-spark apache-airflow-providers-mysql mysql-connector-python"
+
+  airflow-worker:
+    image: docker.1ms.run/apache/airflow:2.8.2
+    environment:
+      _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-apache-spark apache-airflow-providers-mysql mysql-connector-python"

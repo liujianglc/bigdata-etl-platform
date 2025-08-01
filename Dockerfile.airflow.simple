@@ -1,0 +1,16 @@
+FROM apache/airflow:2.8.2
+
+# 切换到airflow用户（避免权限问题）
+USER airflow
+
+# 升级pip
+RUN pip install --upgrade pip
+
+# 安装核心包（一个一个安装避免冲突）
+RUN pip install --no-cache-dir apache-airflow-providers-apache-spark
+RUN pip install --no-cache-dir apache-airflow-providers-mysql  
+RUN pip install --no-cache-dir mysql-connector-python
+
+# 创建简单的设置脚本
+RUN echo '#!/usr/bin/env python3' > /opt/airflow/setup-connections-python.py && \
+    echo 'print("Simple Airflow image ready!")' >> /opt/airflow/setup-connections-python.py

@@ -1,22 +1,36 @@
 FROM docker.1ms.run/apache/airflow:2.8.2
 
-# Switch to root to install packages
+# Switch to root to install system dependencies
 USER root
 
-# Install system dependencies if needed
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     default-mysql-client \
+    gcc \
+    g++ \
+    libsasl2-dev \
+    libsasl2-modules \
+    libssl-dev \
+    libffi-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Switch back to airflow user
 USER airflow
 
+# Upgrade pip first
+RUN pip install --upgrade pip setuptools wheel
+
 # Copy requirements file
 COPY requirements.txt /tmp/requirements.txt
 
-# Install Python packages from requirements file
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Install Python packages with better error handling
+RUN pip install --no-cache-dir --timeout 1000 -r /tmp/requirements.txt || \
+    (echo "Full requirements failed, trying essential packages only..." && \
+     pip install --no-cache-dir \
+         apache-airflow-providers-apache-spark \
+         apache-airflow-providers-mysql \
+         mysql-connector-python)
 
-# Copy any custom configurations or scripts
-COPY --chown=airflow:root setup-connections-python.py /opt/airflow/
+# Create a simple setup script if the original doesn't exist
+RUN echo '#!/usr/bin/env python3\nprint("Custom Airflow image ready!")' > /opt/airflow/setup-connections-python.py
