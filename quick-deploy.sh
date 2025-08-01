@@ -47,6 +47,11 @@ chmod +x *.sh
 echo "📁 创建必要目录..."
 mkdir -p logs config plugins dags spark_jobs
 
+# 设置正确的权限
+echo "🔧 设置目录权限..."
+chmod -R 755 logs config plugins dags spark_jobs
+chmod -R 777 logs  # Airflow logs需要特殊权限
+
 # 环境配置
 echo ""
 echo "⚙️  环境配置..."
@@ -66,17 +71,7 @@ echo "3. 自定义部署"
 read -p "请选择 (1-3): " deploy_mode
 
 # 检测docker-compose命令
-DOCKER_COMPOSE_CMD="docker-compose"
-if ! command -v docker-compose &> /dev/null; then
-    if command -v docker &> /dev/null && docker compose version &> /dev/null; then
-        DOCKER_COMPOSE_CMD="docker compose"
-        echo "💡 使用 Docker Compose V2"
-    else
-        echo "❌ 无法找到可用的docker-compose命令"
-        echo "🔧 尝试运行权限修复脚本: ./fix-permissions.sh"
-        exit 1
-    fi
-fi
+DOCKER_COMPOSE_CMD="docker compose"
 
 case $deploy_mode in
     1)

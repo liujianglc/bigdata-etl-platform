@@ -20,8 +20,16 @@ fi
 # 停止可能运行的服务
 $COMPOSE_CMD down
 
-# 创建必要的目录
+# 创建必要的目录并设置权限
+echo "📁 创建必要目录并设置权限..."
 mkdir -p logs config plugins dags spark_jobs
+
+# 设置正确的权限，确保Airflow容器可以写入
+chmod -R 755 logs config plugins dags spark_jobs
+# logs目录需要特殊权限，因为Airflow容器以不同用户运行
+chmod -R 777 logs
+
+echo "✅ 目录权限设置完成"
 
 # 分阶段启动服务
 echo "第一阶段：启动基础服务..."
