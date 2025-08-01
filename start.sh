@@ -2,26 +2,41 @@
 
 echo "启动完整大数据管道环境..."
 
+# 检测docker-compose命令
+if [ -n "$DOCKER_COMPOSE_CMD" ]; then
+    # 使用从quick-deploy.sh传递的命令
+    COMPOSE_CMD="$DOCKER_COMPOSE_CMD"
+elif command -v docker-compose &> /dev/null; then
+    COMPOSE_CMD="docker-compose"
+elif command -v docker &> /dev/null && docker compose version &> /dev/null; then
+    COMPOSE_CMD="docker compose"
+    echo "💡 使用 Docker Compose V2"
+else
+    echo "❌ 无法找到可用的docker-compose命令"
+    echo "请安装Docker Compose或运行: ./fix-permissions.sh"
+    exit 1
+fi
+
 # 停止可能运行的服务
-docker-compose down
+$COMPOSE_CMD down
 
 # 创建必要的目录
 mkdir -p logs config plugins dags spark_jobs
 
 # 分阶段启动服务
 echo "第一阶段：启动基础服务..."
-docker-compose up -d postgres redis mysql
+$COMPOSE_CMD up -d postgres redis mysql
 
 echo "等待基础服务启动..."
 sleep 20
 
 # 初始化Airflow数据库
 echo "初始化Airflow数据库..."
-docker-compose run --rm airflow-webserver airflow db init
+$COMPOSE_CMD run --rm airflow-webserver airflow db init
 
 # 创建Airflow管理员用户
 echo "创建Airflow管理员用户..."
-docker-compose run --rm airflow-webserver airflow users create \
+$COMPOSE_CMD run --rm airflow-webserver airflow users create \
     --username admin \
     --firstname Admin \
     --lastname User \
@@ -30,26 +45,26 @@ docker-compose run --rm airflow-webserver airflow users create \
     --password admin
 
 echo "第二阶段：启动HDFS服务..."
-docker-compose up -d namenode datanode
+$COMPOSE_CMD up -d namenode datanode
 
 echo "等待HDFS服务启动..."
 sleep 30
 
 echo "第三阶段：启动Hive和Spark服务..."
-docker-compose up -d hive-metastore spark-master spark-worker
+$COMPOSE_CMD up -d hive-metastore spark-master spark-worker
 
 echo "等待Hive和Spark服务启动..."
 sleep 30
 
 echo "第四阶段：启动Airflow服务..."
-docker-compose up -d airflow-webserver airflow-scheduler airflow-worker
+$COMPOSE_CMD up -d airflow-webserver airflow-scheduler airflow-worker
 
 echo "等待Airflow服务启动..."
 sleep 30
 
 # 初始化MySQL测试数据
 echo "初始化MySQL测试数据..."
-docker-compose exec -T mysql mysql -u root -prootpass source_db < init-mysql-data.sql
+$COMPOSE_CMD exec -T mysql mysql -u root -prootpass source_db < init-mysql-data.sql
 
 # 设置Airflow连接
 echo "设置Airflow连接..."
@@ -57,10 +72,10 @@ echo "设置Airflow连接..."
 
 # 初始化HDFS目录
 echo "初始化HDFS目录结构..."
-docker-compose exec namenode hdfs dfs -mkdir -p /user/hive/warehouse || true
-docker-compose exec namenode hdfs dfs -mkdir -p /tmp/spark-events || true
-docker-compose exec namenode hdfs dfs -chmod -R 777 /user/hive/warehouse || true
-docker-compose exec namenode hdfs dfs -chmod -R 777 /tmp || true
+$COMPOSE_CMD exec namenode hdfs dfs -mkdir -p /user/hive/warehouse || true
+$COMPOSE_CMD exec namenode hdfs dfs -mkdir -p /tmp/spark-events || true
+$COMPOSE_CMD exec namenode hdfs dfs -chmod -R 777 /user/hive/warehouse || true
+$COMPOSE_CMD exec namenode hdfs dfs -chmod -R 777 /tmp || true
 
 echo "环境启动完成!"
 echo ""
