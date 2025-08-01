@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Airflow
+logs/
+airflow.cfg
+airflow.db
+airflow-webserver.pid
+standalone_admin_password.txt
+
+# Docker
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.csv
+*.backup
+
+# Local data
+mysql_data/
+postgres_data/
+hadoop_namenode/
+hadoop_datanode/
+
+# Test files
+test_*.py
+*_test.py

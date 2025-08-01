@@ -1,0 +1,100 @@
+version: '3.8'
+
+networks:
+  data-pipeline:
+    driver: bridge
+
+services:
+  # PostgreSQL for Airflow
+  postgres:
+    image: m.daocloud.io/docker.io/postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - data-pipeline
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+  # Airflow Webserver
+  airflow-webserver:
+    image: m.daocloud.io/docker.io/apache/airflow:2.8.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+      _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow-providers-mysql mysql-connector-python
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./config:/opt/airflow/config
+      - ./plugins:/opt/airflow/plugins
+    ports:
+      - "8080:8080"
+    command: webserver
+    networks:
+      - data-pipeline
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Airflow Scheduler
+  airflow-scheduler:
+    image: m.daocloud.io/docker.io/apache/airflow:2.8.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow-providers-mysql mysql-connector-python
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./config:/opt/airflow/config
+      - ./plugins:/opt/airflow/plugins
+    command: scheduler
+    networks:
+      - data-pipeline
+    restart: always
+
+  # MySQL 数据源
+  mysql:
+    image: m.daocloud.io/docker.io/mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: source_db
+      MYSQL_USER: etl_user
+      MYSQL_PASSWORD: etl_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - data-pipeline
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+volumes:
+  postgres_data:
+  mysql_data:
