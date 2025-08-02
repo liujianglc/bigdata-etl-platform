@@ -1,4 +1,4 @@
-version: '3.8'
+# version: '3.8'  # 版本声明已废弃，Docker Compose v2 会自动检测
 
 networks:
   data-pipeline:
