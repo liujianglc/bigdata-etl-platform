@@ -1,3 +1,5 @@
+version: '3.8'
+
 networks:
   data-pipeline:
     driver: bridge
@@ -16,8 +18,10 @@ services:
       - ./init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh
     networks:
       - data-pipeline
+    ports:
+      - "${POSTGRES_PORT}:5432"
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
       interval: 10s
       retries: 5
       start_period: 5s
@@ -26,7 +30,7 @@ services:
   redis:
     image: docker.1ms.run/redis:7-alpine
     expose:
-      - 6379
+      - ${REDIS_PORT}
     networks:
       - data-pipeline
     healthcheck:
@@ -36,14 +40,165 @@ services:
       retries: 50
       start_period: 30s
 
-  # Airflow Webserver
-  airflow-webserver:
+  # MySQL 数据源
+  mysql:
+    image: docker.1ms.run/mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_PORT}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init-mysql-data.sql:/docker-entrypoint-initdb.d/init-mysql-data.sql
+    networks:
+      - data-pipeline
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # HDFS Namenode
+  namenode:
+    image: docker.1ms.run/bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    hostname: namenode
+    environment:
+      - CLUSTER_NAME=${CLUSTER_NAME}
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+      - ./init-hdfs-directories.sh:/opt/init-hdfs-directories.sh
+    ports:
+      - "${HDFS_UI_PORT}:9870"
+      - "${HDFS_NAMENODE_PORT}:9000"
+    networks:
+      - data-pipeline
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # HDFS Datanode
+  datanode:
+    image: docker.1ms.run/bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    depends_on:
+      namenode:
+        condition: service_healthy
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    networks:
+      - data-pipeline
+
+  # Hive Metastore
+  hive-metastore:
+    image: docker.1ms.run/bde2020/hive:2.3.2-postgresql-metastore
+    depends_on:
+      postgres:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+    environment:
+      - HIVE_SITE_CONF_javax_jdo_option_ConnectionURL=jdbc:postgresql://postgres:5432/hive_metastore
+      - HIVE_SITE_CONF_javax_jdo_option_ConnectionDriverName=org.postgresql.Driver
+      - HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName=${HIVE_METASTORE_USER}
+      - HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword=${HIVE_METASTORE_PASSWORD}
+      - HIVE_SITE_CONF_hive_metastore_uris=thrift://hive-metastore:9083
+    ports:
+      - "${HIVE_METASTORE_PORT}:9083"
+    networks:
+      - data-pipeline
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9083"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Spark Master
+  spark-master:
+    image: docker.1ms.run/bde2020/spark-master:3.3.0-hadoop3.3
+    depends_on:
+      namenode:
+        condition: service_healthy
+    environment:
+      - INIT_DAEMON_STEP=setup_spark
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
+    volumes:
+      - ./spark_jobs:/opt/spark-jobs
+      - ./config:/opt/spark-config
+    ports:
+      - "${SPARK_UI_PORT}:8080"
+      - "${SPARK_MASTER_PORT}:7077"
+    networks:
+      - data-pipeline
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Spark Worker
+  spark-worker:
+    image: docker.1ms.run/bde2020/spark-worker:3.3.0-hadoop3.3
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      - SPARK_MASTER=spark://${SPARK_MASTER_HOST}:7077
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
+      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
+      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY}
+    volumes:
+      - ./spark_jobs:/opt/spark-jobs
+      - ./config:/opt/spark-config
+    networks:
+      - data-pipeline
+
+  # Airflow 初始化服务
+  airflow-init:
     build:
       context: .
       dockerfile: Dockerfile.airflow
     depends_on:
       postgres:
         condition: service_healthy
+      mysql:
+        condition: service_healthy
+      hive-metastore:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./config:/opt/airflow/config
+      - ./setup-connections-enhanced.py:/opt/airflow/setup-connections-enhanced.py
+      - ./init-airflow-complete.sh:/opt/airflow/init-airflow-complete.sh
+    networks:
+      - data-pipeline
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin123 &&
+        python /opt/airflow/setup-connections-enhanced.py &&
+        echo 'Airflow 初始化完成'
+      "
+
+  # Airflow Webserver
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -56,13 +211,13 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./config:/opt/airflow/config
       - ./plugins:/opt/airflow/plugins
       - ./spark_jobs:/opt/airflow/spark_jobs
-      - ./setup-connections-python.py:/opt/airflow/setup-connections-python.py
     ports:
       - "${AIRFLOW_WEBSERVER_PORT}:8080"
     command: webserver
@@ -81,8 +236,8 @@ services:
       context: .
       dockerfile: Dockerfile.airflow
     depends_on:
-      postgres:
-        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -95,6 +250,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -105,7 +261,7 @@ services:
     networks:
       - data-pipeline
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      test: ["CMD", "curl", "--fail", "http://localhost:${AIRFLOW_SCHEDULER_PORT}/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -117,8 +273,8 @@ services:
       context: .
       dockerfile: Dockerfile.airflow
     depends_on:
-      postgres:
-        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -131,6 +287,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: '${AIRFLOW__CORE__LOAD_EXAMPLES}'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+      AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -147,101 +304,26 @@ services:
       retries: 5
       start_period: 30s
 
-  # MySQL 数据源
-  mysql:
-    image: docker.1ms.run/mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-    ports:
-      - "${MYSQL_PORT}:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    networks:
-      - data-pipeline
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
-
-  # HDFS Namenode
-  namenode:
+  # HDFS 目录初始化服务
+  hdfs-init:
     image: docker.1ms.run/bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
-    hostname: namenode
-    environment:
-      - CLUSTER_NAME=${CLUSTER_NAME}
-      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
-    volumes:
-      - hadoop_namenode:/hadoop/dfs/name
-    ports:
-      - "${HDFS_UI_PORT}:9870"  # HDFS Web UI
-      - "${HDFS_NAMENODE_PORT}:9000"  # HDFS port
-    networks:
-      - data-pipeline
-
-  # HDFS Datanode
-  datanode:
-    image: docker.1ms.run/bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
     depends_on:
-      - namenode
-    environment:
-      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
-    volumes:
-      - hadoop_datanode:/hadoop/dfs/data
-    networks:
-      - data-pipeline
-
-  # Hive Metastore
-  hive-metastore:
-    image: docker.1ms.run/bde2020/hive:2.3.2-postgresql-metastore
-    depends_on:
-      postgres:
-        condition: service_healthy
       namenode:
+        condition: service_healthy
+      datanode:
         condition: service_started
     environment:
-      - HIVE_SITE_CONF_javax_jdo_option_ConnectionURL=jdbc:postgresql://postgres:5432/hive_metastore
-      - HIVE_SITE_CONF_javax_jdo_option_ConnectionDriverName=org.postgresql.Driver
-      - HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName=${HIVE_METASTORE_USER}
-      - HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword=${HIVE_METASTORE_PASSWORD}
-      - HIVE_SITE_CONF_hive_metastore_uris=thrift://hive-metastore:9083
-    ports:
-      - "${HIVE_METASTORE_PORT}:9083"
-    networks:
-      - data-pipeline
-
-  # Spark Master
-  spark-master:
-    image: docker.1ms.run/bde2020/spark-master:3.3.0-hadoop3.3
-    depends_on:
-      - namenode
-    environment:
-      - INIT_DAEMON_STEP=setup_spark
       - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
     volumes:
-      - ./spark_jobs:/opt/spark-jobs
-    ports:
-      - "${SPARK_UI_PORT}:8080"  # Spark Web UI
-      - "${SPARK_MASTER_PORT}:7077"  # Spark Master port
+      - ./init-hdfs-directories.sh:/opt/init-hdfs-directories.sh
     networks:
       - data-pipeline
-
-  # Spark Worker
-  spark-worker:
-    image: docker.1ms.run/bde2020/spark-worker:3.3.0-hadoop3.3
-    depends_on:
-      - spark-master
-    environment:
-      - SPARK_MASTER=spark://${SPARK_MASTER_HOST}:7077
-      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
-      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
-      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY}
-    volumes:
-      - ./spark_jobs:/opt/spark-jobs
-    networks:
-      - data-pipeline
+    command: >
+      bash -c "
+        chmod +x /opt/init-hdfs-directories.sh &&
+        /opt/init-hdfs-directories.sh &&
+        echo 'HDFS 目录初始化完成'
+      "
 
 volumes:
   postgres_data:
