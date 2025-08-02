@@ -22,6 +22,7 @@ def create_connection(conn_id, conn_type, host, port=None, login=None, password=
         if existing_conn:
             logger.info(f"连接 {conn_id} 已存在，删除旧连接")
             session.delete(existing_conn)
+            session.commit()  # 先提交删除操作
         
         # 创建新连接
         new_conn = Connection(
@@ -34,7 +35,6 @@ def create_connection(conn_id, conn_type, host, port=None, login=None, password=
             schema=schema,
             extra=extra
         )
-        
         session.add(new_conn)
         session.commit()
         logger.info(f"成功创建连接: {conn_id}")
@@ -42,7 +42,8 @@ def create_connection(conn_id, conn_type, host, port=None, login=None, password=
     except Exception as e:
         logger.error(f"创建连接 {conn_id} 失败: {str(e)}")
         session.rollback()
-        raise
+        # 如果失败，尝试跳过这个连接继续处理其他连接
+        logger.warning(f"跳过连接 {conn_id}，继续处理其他连接")
     finally:
         session.close()
 
