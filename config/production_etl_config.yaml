@@ -1,0 +1,138 @@
+# 生产环境大数据ETL配置文件
+# 用于配置MySQL到Hive的增量ETL流程
+
+# MySQL数据源配置
+mysql:
+  host: "host.docker.internal"  # Docker容器内访问宿主机MySQL
+  port: 3306
+  username: "root"
+  password: "Sp1derman"
+  database: "wudeli"
+  
+  # 连接池配置
+  connection_pool:
+    max_connections: 10
+    connection_timeout: 30
+    
+  # 增量更新配置
+  incremental:
+    default_column: "updated_at"
+    lookback_days: 1
+    batch_size: 10000
+
+# Spark集群配置
+spark:
+  master: "spark://spark-master:7077"
+  deploy_mode: "client"
+  
+  # 资源配置
+  driver:
+    memory: "2g"
+    cores: 1
+    
+  executor:
+    memory: "2g" 
+    cores: 2
+    instances: 2
+    
+  # 优化配置
+  conf:
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+    spark.sql.adaptive.skewJoin.enabled: true
+    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+    spark.sql.sources.partitionOverwriteMode: "dynamic"
+
+# HDFS存储配置
+hdfs:
+  namenode: "hdfs://namenode:9000"
+  
+  # 目录结构
+  paths:
+    base: "/user/bigdata/wudeli"
+    raw: "/user/bigdata/wudeli/raw"
+    processed: "/user/bigdata/wudeli/processed" 
+    reports: "/user/bigdata/wudeli/reports"
+    temp: "/user/bigdata/wudeli/temp"
+    
+  # 文件格式配置
+  storage:
+    format: "parquet"
+    compression: "snappy"
+    partition_strategy: "date"
+
+# Hive数据仓库配置  
+hive:
+  database: "wudeli_analytics"
+  metastore_uri: "thrift://hive-metastore:9083"
+  
+  # 表配置
+  tables:
+    main_data: "main_data"
+    
+  # 分析视图
+  views:
+    - name: "daily_summary"
+      description: "每日业务指标汇总"
+    - name: "product_ranking"
+      description: "产品销售业绩排行"
+    - name: "customer_analysis" 
+      description: "客户行为深度分析"
+    - name: "monthly_trends"
+      description: "月度业务趋势分析"
+
+# ETL作业配置
+etl:
+  # 调度配置
+  schedule:
+    cron: "0 2 * * *"  # 每天凌晨2点执行
+    timezone: "Asia/Shanghai"
+    
+  # 重试配置  
+  retry:
+    attempts: 2
+    delay_minutes: 10
+    exponential_backoff: true
+    max_delay_hours: 1
+    
+  # 数据质量检查
+  data_quality:
+    enable_validation: true
+    null_threshold: 0.05  # 空值比例阈值
+    duplicate_check: true
+    freshness_hours: 25   # 数据新鲜度检查(小时)
+
+# 监控和告警配置
+monitoring:
+  # 日志级别
+  log_level: "INFO"
+  
+  # 性能指标
+  metrics:
+    enable_spark_ui: true
+    enable_hdfs_metrics: true
+    track_execution_time: true
+    
+  # 告警配置
+  alerts:
+    email_on_failure: true
+    email_on_retry: false
+    slack_webhook: ""  # 可选的Slack告警
+    
+  # 报告配置
+  reports:
+    generate_html: true
+    save_to_hdfs: true
+    retention_days: 30
+
+# 安全配置
+security:
+  # 密码加密（生产环境应使用Airflow Variables或Connections）
+  use_airflow_connections: true
+  encrypt_passwords: true
+  
+  # Kerberos认证（如果启用）
+  kerberos:
+    enabled: false
+    principal: ""
+    keytab: ""

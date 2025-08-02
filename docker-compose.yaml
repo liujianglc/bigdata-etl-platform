@@ -15,7 +15,7 @@ services:
       POSTGRES_MULTIPLE_DATABASES: hive_metastore
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh
+      - ./postgres-init:/docker-entrypoint-initdb.d
     networks:
       - data-pipeline
     ports:
@@ -52,7 +52,7 @@ services:
       - "${MYSQL_PORT}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./init-mysql-data.sql:/docker-entrypoint-initdb.d/init-mysql-data.sql
+      - ./mysql-init:/docker-entrypoint-initdb.d
     networks:
       - data-pipeline
     healthcheck:
