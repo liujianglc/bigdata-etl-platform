@@ -104,11 +104,15 @@ services:
       namenode:
         condition: service_healthy
     environment:
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
       - HIVE_SITE_CONF_javax_jdo_option_ConnectionURL=jdbc:postgresql://postgres:5432/hive_metastore
       - HIVE_SITE_CONF_javax_jdo_option_ConnectionDriverName=org.postgresql.Driver
       - HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName=${HIVE_METASTORE_USER}
       - HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword=${HIVE_METASTORE_PASSWORD}
       - HIVE_SITE_CONF_hive_metastore_uris=thrift://hive-metastore:9083
+    volumes:
+      - ./init-hive-metastore.sh:/opt/init-hive-metastore.sh:ro
+    command: bash /opt/init-hive-metastore.sh
     ports:
       - "${HIVE_METASTORE_PORT}:9083"
     networks:
@@ -318,12 +322,7 @@ services:
       - ./init-hdfs-directories.sh:/opt/init-hdfs-directories.sh
     networks:
       - data-pipeline
-    command: >
-      bash -c "
-        chmod +x /opt/init-hdfs-directories.sh &&
-        /opt/init-hdfs-directories.sh &&
-        echo 'HDFS 目录初始化完成'
-      "
+    command: bash /opt/init-hdfs-directories.sh
 
 volumes:
   postgres_data:

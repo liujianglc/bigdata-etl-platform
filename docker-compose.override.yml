@@ -1,8 +1,6 @@
 # Development overrides for docker-compose
 # This file is automatically loaded by docker-compose
 
-version: '3.8'
-
 services:
   # Development-specific configurations
   airflow-webserver:
