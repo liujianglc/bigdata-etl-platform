@@ -75,7 +75,7 @@ cleanup_old_resources() {
     log_step "清理旧的容器和网络..."
     
     # 停止并删除旧容器
-    docker-compose down -v --remove-orphans 2>/dev/null || true
+    docker compose down -v --remove-orphans 2>/dev/null || true
     
     # 删除悬空的镜像
     docker image prune -f 2>/dev/null || true
@@ -87,7 +87,7 @@ cleanup_old_resources() {
 build_images() {
     log_step "构建Airflow镜像..."
     
-    docker-compose build airflow-webserver
+    docker compose build airflow-webserver
     
     if [[ $? -eq 0 ]]; then
         log_info "镜像构建完成"
@@ -101,7 +101,7 @@ build_images() {
 start_base_services() {
     log_step "启动基础服务 (PostgreSQL, Redis, MySQL)..."
     
-    docker-compose up -d postgres redis mysql
+    docker compose up -d postgres redis mysql
     
     # 等待基础服务启动
     log_info "等待基础服务启动..."
@@ -110,11 +110,11 @@ start_base_services() {
     # 检查服务状态
     local services=("postgres" "redis" "mysql")
     for service in "${services[@]}"; do
-        if docker-compose ps "$service" | grep -q "Up"; then
+        if docker compose ps "$service" | grep -q "Up"; then
             log_info "$service 服务启动成功"
         else
             log_error "$service 服务启动失败"
-            docker-compose logs "$service"
+            docker compose logs "$service"
             exit 1
         fi
     done
@@ -125,28 +125,28 @@ start_bigdata_services() {
     log_step "启动大数据服务 (HDFS, Hive, Spark)..."
     
     # 启动HDFS
-    docker-compose up -d namenode datanode
+    docker compose up -d namenode datanode
     log_info "等待HDFS启动..."
     sleep 45
     
     # 启动Hive Metastore
-    docker-compose up -d hive-metastore
+    docker compose up -d hive-metastore
     log_info "等待Hive Metastore启动..."
     sleep 30
     
     # 启动Spark
-    docker-compose up -d spark-master spark-worker
+    docker compose up -d spark-master spark-worker
     log_info "等待Spark启动..."
     sleep 20
     
     # 检查大数据服务状态
     local bigdata_services=("namenode" "datanode" "hive-metastore" "spark-master" "spark-worker")
     for service in "${bigdata_services[@]}"; do
-        if docker-compose ps "$service" | grep -q "Up"; then
+        if docker compose ps "$service" | grep -q "Up"; then
             log_info "$service 服务启动成功"
         else
             log_warn "$service 服务可能启动失败，检查日志..."
-            docker-compose logs --tail=20 "$service"
+            docker compose logs --tail=20 "$service"
         fi
     done
 }
@@ -157,7 +157,7 @@ initialize_data() {
     
     # 运行HDFS目录初始化
     log_info "初始化HDFS目录..."
-    docker-compose up hdfs-init
+    docker compose up hdfs-init
     
     if [[ $? -eq 0 ]]; then
         log_info "HDFS目录初始化完成"
@@ -172,19 +172,19 @@ start_airflow_services() {
     
     # 运行Airflow初始化
     log_info "初始化Airflow..."
-    docker-compose up airflow-init
+    docker compose up airflow-init
     
     if [[ $? -eq 0 ]]; then
         log_info "Airflow初始化完成"
     else
         log_error "Airflow初始化失败"
-        docker-compose logs airflow-init
+        docker compose logs airflow-init
         exit 1
     fi
     
     # 启动Airflow服务
     log_info "启动Airflow服务..."
-    docker-compose up -d airflow-webserver airflow-scheduler airflow-worker
+    docker compose up -d airflow-webserver airflow-scheduler airflow-worker
     
     # 等待Airflow启动
     log_info "等待Airflow服务启动..."
@@ -193,11 +193,11 @@ start_airflow_services() {
     # 检查Airflow服务状态
     local airflow_services=("airflow-webserver" "airflow-scheduler" "airflow-worker")
     for service in "${airflow_services[@]}"; do
-        if docker-compose ps "$service" | grep -q "Up"; then
+        if docker compose ps "$service" | grep -q "Up"; then
             log_info "$service 服务启动成功"
         else
             log_error "$service 服务启动失败"
-            docker-compose logs --tail=30 "$service"
+            docker compose logs --tail=30 "$service"
         fi
     done
 }
@@ -231,7 +231,7 @@ verify_services() {
     # 显示服务状态
     echo
     log_step "所有服务状态:"
-    docker-compose ps
+    docker compose ps
 }
 
 # 显示访问信息
@@ -256,10 +256,10 @@ show_access_info() {
     echo "  • 日志目录:          ./logs/"
     echo
     echo "🚀 快速命令:"
-    echo "  • 查看日志:          docker-compose logs -f [service_name]"
-    echo "  • 重启服务:          docker-compose restart [service_name]"
-    echo "  • 停止所有服务:      docker-compose down"
-    echo "  • 查看服务状态:      docker-compose ps"
+    echo "  • 查看日志:          docker compose logs -f [service_name]"
+    echo "  • 重启服务:          docker compose restart [service_name]"
+    echo "  • 停止所有服务:      docker compose down"
+    echo "  • 查看服务状态:      docker compose ps"
     echo
 }
 
@@ -274,7 +274,7 @@ main() {
         exit 1
     fi
     
-    if ! command -v docker-compose &> /dev/null; then
+    if ! command -v docker compose &> /dev/null; then
         log_error "Docker Compose未安装或不在PATH中"
         exit 1
     fi
