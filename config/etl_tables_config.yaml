@@ -1,0 +1,64 @@
+# ETL表同步配置
+# 定义需要从MySQL同步到Hive的表
+
+tables:
+  customers:
+    source_table: customers
+    hive_table: customers
+    incremental_column: UpdatedDate
+    description: "客户信息表"
+    
+  employees:
+    source_table: employees
+    hive_table: employees
+    incremental_column: UpdatedDate
+    description: "员工信息表"
+    
+  products:
+    source_table: products
+    hive_table: products
+    incremental_column: UpdatedDate
+    description: "产品信息表"
+    
+  orders:
+    source_table: orders
+    hive_table: orders
+    incremental_column: UpdatedDate
+    description: "订单主表"
+    
+  orderdetails:
+    source_table: orderdetails
+    hive_table: orderdetails
+    incremental_column: UpdatedDate
+    description: "订单详情表"
+    
+  inventory:
+    source_table: inventory
+    hive_table: inventory
+    incremental_column: UpdatedDate
+    description: "库存表"
+    
+  inventorytransactions:
+    source_table: inventorytransactions
+    hive_table: inventorytransactions
+    incremental_column: CreatedDate
+    description: "库存交易记录表"
+    
+  warehouses:
+    source_table: warehouses
+    hive_table: warehouses
+    incremental_column: UpdatedDate
+    description: "仓库信息表"
+    
+  factories:
+    source_table: factories
+    hive_table: factories
+    incremental_column: UpdatedDate
+    description: "工厂信息表"
+
+# ETL配置
+etl_settings:
+  lookback_days: 1  # 增量同步回溯天数
+  batch_size: 10000  # 批处理大小
+  max_retries: 3     # 最大重试次数
+  timeout_minutes: 30  # 单表超时时间（分钟）

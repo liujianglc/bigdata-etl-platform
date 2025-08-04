@@ -16,7 +16,7 @@ mysql:
     
   # 增量更新配置
   incremental:
-    default_column: "updated_at"
+    default_column: "UpdatedDate"
     lookback_days: 1
     batch_size: 10000
 
