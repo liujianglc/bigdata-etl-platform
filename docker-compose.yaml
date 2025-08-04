@@ -40,25 +40,7 @@ services:
       retries: 50
       start_period: 30s
 
-  # MySQL 数据源
-  mysql:
-    image: docker.1ms.run/mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-    ports:
-      - "${MYSQL_PORT}:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./mysql-init:/docker-entrypoint-initdb.d
-    networks:
-      - data-pipeline
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
+
 
   # HDFS Namenode
   namenode:
@@ -175,26 +157,31 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      mysql:
-        condition: service_healthy
       hive-metastore:
         condition: service_healthy
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
       AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
-      JAVA_HOME: '${JAVA_HOME}'
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
       - ./config:/opt/airflow/config
+      - ./plugins:/opt/airflow/plugins
       - ./setup-connections-enhanced.py:/opt/airflow/setup-connections-enhanced.py
       - ./init-airflow-complete.sh:/opt/airflow/init-airflow-complete.sh
     networks:
       - data-pipeline
+    user: "0:0"  # 以root用户运行初始化，确保目录权限正确
     command: >
       bash -c "
-        airflow db init &&
-        airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin123 &&
-        python /opt/airflow/setup-connections-enhanced.py &&
+        # 确保目录存在并设置正确权限
+        mkdir -p /opt/airflow/logs /opt/airflow/plugins &&
+        chown -R 50000:0 /opt/airflow/logs /opt/airflow/plugins /opt/airflow/dags &&
+        chmod -R 775 /opt/airflow/logs /opt/airflow/plugins &&
+        # 切换到airflow用户执行初始化
+        su airflow -c 'airflow db init' &&
+        su airflow -c 'airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin123' &&
+        su airflow -c 'python /opt/airflow/setup-connections-enhanced.py' &&
         echo 'Airflow 初始化完成'
       "
 
@@ -227,13 +214,14 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_ENGINE_ARGS: '{"pool_reset_on_return": "commit"}'
     volumes:
       - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
+      - ./logs:/opt/airflow/logs:rw
       - ./config:/opt/airflow/config
       - ./plugins:/opt/airflow/plugins
       - ./spark_jobs:/opt/airflow/spark_jobs
     ports:
       - "${AIRFLOW_WEBSERVER_PORT}:8080"
     command: webserver
+    user: "50000:0"  # 使用airflow用户ID，组ID为root以确保权限
     networks:
       - data-pipeline
     healthcheck:
@@ -276,15 +264,16 @@ services:
       AIRFLOW__SCHEDULER__PARSING_PROCESSES: '2'
     volumes:
       - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
+      - ./logs:/opt/airflow/logs:rw
       - ./config:/opt/airflow/config
       - ./plugins:/opt/airflow/plugins
       - ./spark_jobs:/opt/airflow/spark_jobs
     command: scheduler
+    user: "50000:0"  # 使用airflow用户ID，组ID为root以确保权限
     networks:
       - data-pipeline
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:${AIRFLOW_SCHEDULER_PORT}/health"]
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -319,11 +308,12 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_ENGINE_ARGS: '{"pool_reset_on_return": "commit"}'
     volumes:
       - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
+      - ./logs:/opt/airflow/logs:rw
       - ./config:/opt/airflow/config
       - ./plugins:/opt/airflow/plugins
       - ./spark_jobs:/opt/airflow/spark_jobs
     command: celery worker
+    user: "50000:0"  # 使用airflow用户ID，组ID为root以确保权限
     networks:
       - data-pipeline
     healthcheck:
@@ -351,6 +341,5 @@ services:
 
 volumes:
   postgres_data:
-  mysql_data:
   hadoop_namenode:
   hadoop_datanode:

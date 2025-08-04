@@ -51,12 +51,12 @@ def main():
     """设置所有连接"""
     logger.info("开始设置Airflow连接...")
     
-    # 从环境变量读取配置
-    mysql_host = 'mysql'
-    mysql_port = int(os.getenv('MYSQL_PORT', 3306))
-    mysql_user = os.getenv('MYSQL_USER', 'etl_user')
-    mysql_password = os.getenv('MYSQL_PASSWORD', 'etl_pass')
-    mysql_database = os.getenv('MYSQL_DATABASE', 'wudeli')
+    # 从环境变量读取外部MySQL配置
+    mysql_host = os.getenv('EXTERNAL_MYSQL_HOST', '10.0.19.6')
+    mysql_port = int(os.getenv('EXTERNAL_MYSQL_PORT', 3306))
+    mysql_user = os.getenv('EXTERNAL_MYSQL_USER', 'root')
+    mysql_password = os.getenv('EXTERNAL_MYSQL_PASSWORD', 'Sp1derman123@')
+    mysql_database = os.getenv('EXTERNAL_MYSQL_DATABASE', 'wudeli')
     
     spark_host = os.getenv('SPARK_MASTER_HOST', 'spark-master')
     spark_port = int(os.getenv('SPARK_MASTER_PORT', 7077))
@@ -67,7 +67,7 @@ def main():
     hdfs_host = os.getenv('HDFS_NAMENODE_HOST', 'namenode')
     hdfs_port = int(os.getenv('HDFS_NAMENODE_PORT', 9000))
     
-    # MySQL连接 - 用于数据源
+    # MySQL连接 - 主要数据源连接
     create_connection(
         conn_id='mysql_default',
         conn_type='mysql',
@@ -75,17 +75,6 @@ def main():
         port=mysql_port,
         login=mysql_user,
         password=mysql_password,
-        schema=mysql_database
-    )
-    
-    # MySQL连接 - root用户，用于管理操作
-    create_connection(
-        conn_id='mysql_root',
-        conn_type='mysql',
-        host=mysql_host,
-        port=mysql_port,
-        login='root',
-        password=os.getenv('MYSQL_ROOT_PASSWORD', 'Sp1derman'),
         schema=mysql_database
     )
     
@@ -124,15 +113,15 @@ def main():
         port=hive_port
     )
     
-    # 生产环境MySQL连接（用于配置文件中的连接）
+    # 外部MySQL连接（生产环境，与 mysql_default 相同配置）
     create_connection(
         conn_id='mysql_wudeli',
         conn_type='mysql',
-        host='host.docker.internal',  # Docker内访问宿主机
+        host=mysql_host,
         port=mysql_port,
-        login='root',
-        password='Sp1derman',
-        schema='wudeli'
+        login=mysql_user,
+        password=mysql_password,
+        schema=mysql_database
     )
     
     logger.info("所有连接设置完成！")

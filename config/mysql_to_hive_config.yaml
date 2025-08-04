@@ -5,15 +5,29 @@ mysql:
   driver: com.mysql.cj.jdbc.Driver
 
 tables:
-  - mysql_table: orders
-    hive_table: ods.orders
+  - mysql_table: Orders
+    hive_table: ods.Orders
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: incremental       # 可选值: full, incremental
+    sync_mode: full       # 可选值: full, incremental
     enabled: true
 
-  - mysql_table: customers
-    hive_table: ods.customers
+  - mysql_table: Customers
+    hive_table: ods.Customers
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    enabled: true
+
+  - mysql_table: Products
+    hive_table: ods.Products
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    enabled: true
+
+  - mysql_table: OrderDetails
+    hive_table: ods.OrderDetails
     incremental_column: UpdatedDate
     partition_column: dt
     sync_mode: full

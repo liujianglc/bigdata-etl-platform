@@ -21,6 +21,11 @@ RUN apt-get update && apt-get install -y \
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 ENV PATH=$PATH:$JAVA_HOME/bin
 
+# 确保logs目录存在并设置正确权限
+RUN mkdir -p /opt/airflow/logs /opt/airflow/plugins \
+    && chown -R airflow:root /opt/airflow/logs /opt/airflow/plugins \
+    && chmod -R 775 /opt/airflow/logs /opt/airflow/plugins
+
 # Switch back to airflow user
 USER airflow
 
@@ -40,3 +45,6 @@ RUN pip install --no-cache-dir --timeout 1000 -r /tmp/requirements.txt || \
 
 # Create a simple setup script if the original doesn't exist
 RUN echo '#!/usr/bin/env python3\nprint("Custom Airflow image ready!")' > /opt/airflow/setup-connections-python.py
+
+# 设置umask确保新创建的文件有正确权限
+RUN echo 'umask 002' >> /home/airflow/.bashrc

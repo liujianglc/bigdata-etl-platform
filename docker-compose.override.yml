@@ -27,8 +27,3 @@ services:
     ports:
       - "5432:5432"
     
-  mysql:
-    # Add sample data volume for development
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./sample_data:/docker-entrypoint-initdb.d:ro
