@@ -3,17 +3,23 @@ FROM docker.1ms.run/apache/airflow:2.8.2
 # Switch to root to install system dependencies
 USER root
 
-# Install system dependencies
+# Install system dependencies including Java
 RUN apt-get update && apt-get install -y \
     default-mysql-client \
+    default-jdk \
     gcc \
     g++ \
     libsasl2-dev \
     libsasl2-modules \
     libssl-dev \
     libffi-dev \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Set JAVA_HOME environment variable
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+ENV PATH=$PATH:$JAVA_HOME/bin
 
 # Switch back to airflow user
 USER airflow
