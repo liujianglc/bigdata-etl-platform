@@ -1,0 +1,20 @@
+mysql:
+  url: jdbc:mysql://10.0.19.6:3306/wudeli
+  user: root
+  password: Sp1derman123@
+  driver: com.mysql.cj.jdbc.Driver
+
+tables:
+  - mysql_table: orders
+    hive_table: ods.orders
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: incremental       # 可选值: full, incremental
+    enabled: true
+
+  - mysql_table: customers
+    hive_table: ods.customers
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    enabled: true
