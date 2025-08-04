@@ -133,6 +133,7 @@ services:
     environment:
       - INIT_DAEMON_STEP=setup_spark
       - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
+      - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
@@ -159,6 +160,7 @@ services:
       - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
       - SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
       - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY}
+      - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
@@ -180,6 +182,7 @@ services:
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
       AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
+      JAVA_HOME: '${JAVA_HOME}'
     volumes:
       - ./dags:/opt/airflow/dags
       - ./config:/opt/airflow/config
@@ -216,6 +219,12 @@ services:
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
       AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
+      # SQLAlchemy 连接池配置 - 修复事务问题
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_PRE_PING: 'true'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_RECYCLE: '3600'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_ENGINE_ARGS: '{"pool_reset_on_return": "commit"}'
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -255,6 +264,16 @@ services:
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
       AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
+      # SQLAlchemy 连接池配置 - 修复事务问题
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_PRE_PING: 'true'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_RECYCLE: '3600'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_ENGINE_ARGS: '{"pool_reset_on_return": "commit"}'
+      # 调度器配置优化
+      AIRFLOW__SCHEDULER__CATCHUP_BY_DEFAULT: 'false'
+      AIRFLOW__SCHEDULER__MAX_TIS_PER_QUERY: '512'
+      AIRFLOW__SCHEDULER__PARSING_PROCESSES: '2'
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -292,6 +311,12 @@ services:
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
       AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
+      # SQLAlchemy 连接池配置 - 修复事务问题
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_PRE_PING: 'true'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_RECYCLE: '3600'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_ENGINE_ARGS: '{"pool_reset_on_return": "commit"}'
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
