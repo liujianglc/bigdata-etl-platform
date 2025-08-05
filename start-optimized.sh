@@ -99,16 +99,16 @@ build_images() {
 
 # 启动基础服务
 start_base_services() {
-    log_step "启动基础服务 (PostgreSQL, Redis, MySQL)..."
+    log_step "启动基础服务 (PostgreSQL, Redis)..."
     
-    docker compose up -d postgres redis mysql
+    docker compose up -d postgres redis
     
     # 等待基础服务启动
     log_info "等待基础服务启动..."
     sleep 30
     
     # 检查服务状态
-    local services=("postgres" "redis" "mysql")
+    local services=("postgres" "redis")
     for service in "${services[@]}"; do
         if docker compose ps "$service" | grep -q "Up"; then
             log_info "$service 服务启动成功"
@@ -210,7 +210,6 @@ verify_services() {
     local ports=(
         "5432:PostgreSQL"
         "6379:Redis"
-        "3306:MySQL"
         "9870:HDFS NameNode UI"
         "8081:Spark Master UI"
         "9083:Hive Metastore"
@@ -246,7 +245,6 @@ show_access_info() {
     echo
     echo "🔌 数据库连接信息:"
     echo "  • PostgreSQL:        localhost:5432 (airflow/airflow123)"
-    echo "  • MySQL:             localhost:3306 (etl_user/etl_pass)"
     echo "  • Hive Metastore:    localhost:9083"
     echo
     echo "📁 重要目录:"
