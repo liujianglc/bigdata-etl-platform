@@ -180,14 +180,14 @@ def create_hive_databases():
             else:
                 logging.error("所有重试都失败了，抛出异常")
                 raise
-                
-    finally:
-        if spark:
-            try:
-                spark.stop()
-                logging.info("Spark会话已关闭")
-            except Exception as e:
-                logging.warning(f"关闭Spark会话时出现警告: {e}")
+    
+    # 如果所有重试都成功，确保清理资源
+    if spark:
+        try:
+            spark.stop()
+            logging.info("Spark会话已关闭")
+        except Exception as e:
+            logging.warning(f"关闭Spark会话时出现警告: {e}")
 
 def sync_table(table_conf, exec_date):
     spark = None
