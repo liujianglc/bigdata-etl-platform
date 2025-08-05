@@ -9,26 +9,33 @@ tables:
     hive_table: ods.Orders
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: full       # 可选值: full, incremental
+    sync_mode: incremental       # 可选值: full, incremental
     enabled: true
 
   - mysql_table: Customers
     hive_table: ods.Customers
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: full
+    sync_mode: incremental
     enabled: true
 
   - mysql_table: Products
     hive_table: ods.Products
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: full
+    sync_mode: incremental
     enabled: true
 
   - mysql_table: OrderDetails
     hive_table: ods.OrderDetails
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: full
+    sync_mode: incremental
+    enabled: true
+    
+  - mysql_table: Warehouses
+    hive_table: ods.Warehouses
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: incremental
     enabled: true
