@@ -20,9 +20,74 @@ def load_config():
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
 
+def check_environment():
+    """检查环境是否准备就绪"""
+    import socket
+    import time
+    
+    services_to_check = [
+        ("namenode", 9000, "HDFS Namenode"),
+        ("hive-metastore", 9083, "Hive Metastore"),
+        ("spark-master", 7077, "Spark Master")
+    ]
+    
+    for host, port, service_name in services_to_check:
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(10)
+                result = sock.connect_ex((host, port))
+                sock.close()
+                
+                if result == 0:
+                    logging.info(f"✅ {service_name} ({host}:{port}) 连接成功")
+                    break
+                else:
+                    if attempt < max_attempts - 1:
+                        logging.warning(f"⚠️ {service_name} ({host}:{port}) 连接失败，等待重试...")
+                        time.sleep(5)
+                    else:
+                        logging.error(f"❌ {service_name} ({host}:{port}) 连接失败")
+                        raise Exception(f"无法连接到 {service_name}")
+                        
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    logging.warning(f"⚠️ 检查 {service_name} 时出错: {e}，等待重试...")
+                    time.sleep(5)
+                else:
+                    logging.error(f"❌ 检查 {service_name} 时出错: {e}")
+                    raise
+
 def create_spark():
-    return SparkSession.builder \
-        .appName("MySQL to Hive Sync") \
+    import os
+    
+    # 设置环境变量
+    os.environ['JAVA_HOME'] = '/usr/lib/jvm/default-java'
+    os.environ['SPARK_HOME'] = '/home/airflow/.local/lib/python3.8/site-packages/pyspark'
+    
+    # 检查是否在容器环境中运行
+    is_container = os.path.exists('/.dockerenv')
+    
+    builder = SparkSession.builder.appName("MySQL to Hive Sync")
+    
+    if is_container:
+        # 容器环境：连接到外部Spark集群
+        logging.info("检测到容器环境，连接到外部Spark集群")
+        builder = builder \
+            .master("spark://spark-master:7077") \
+            .config("spark.executor.memory", "1g") \
+            .config("spark.executor.cores", "1") \
+            .config("spark.executor.instances", "1") \
+            .config("spark.driver.memory", "512m") \
+            .config("spark.driver.maxResultSize", "256m")
+    else:
+        # 本地环境：使用本地模式
+        logging.info("检测到本地环境，使用本地Spark模式")
+        builder = builder.master("local[2]")
+    
+    # 通用配置
+    return builder \
         .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
         .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
         .config("spark.sql.catalogImplementation", "hive") \
@@ -30,50 +95,92 @@ def create_spark():
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
         .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
         .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
-        .config("spark.network.timeout", "300s") \
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+        .config("spark.network.timeout", "600s") \
+        .config("spark.sql.execution.arrow.pyspark.enabled", "false") \
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
         .config("spark.sql.adaptive.skewJoin.enabled", "true") \
+        .config("spark.driver.extraJavaOptions", "-Djava.security.manager=default") \
+        .config("spark.executor.extraJavaOptions", "-Djava.security.manager=default") \
+        .config("spark.sql.execution.arrow.maxRecordsPerBatch", "1000") \
+        .config("spark.rpc.askTimeout", "600s") \
+        .config("spark.rpc.lookupTimeout", "600s") \
         .enableHiveSupport() \
         .getOrCreate()
 
 def create_hive_databases():
     """预创建所有需要的Hive数据库"""
     spark = None
+    max_retries = 3
+    retry_delay = 30  # 30秒
+    
+    # 首先检查环境
     try:
-        spark = create_spark()
-        config = load_config()
-        
-        # 收集所有需要的数据库名称
-        databases = set()
-        for table_conf in config['tables']:
-            if table_conf.get('enabled', True):
-                hive_table = table_conf['hive_table']
-                if '.' in hive_table:
-                    db_name = hive_table.split('.')[0]
-                    databases.add(db_name)
-        
-        # 创建所有需要的数据库
-        for db_name in databases:
-            logging.info(f"正在创建Hive数据库: {db_name}")
-            spark.sql(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-            logging.info(f"✅ 数据库 {db_name} 创建成功")
-        
-        # 验证数据库创建结果
-        result = spark.sql("SHOW DATABASES").collect()
-        existing_databases = [row[0] for row in result]
-        logging.info(f"当前所有数据库: {existing_databases}")
-        
-        for db_name in databases:
-            if db_name in existing_databases:
-                logging.info(f"✅ 验证通过: 数据库 {db_name} 存在")
-            else:
-                logging.error(f"❌ 验证失败: 数据库 {db_name} 不存在")
-                raise Exception(f"数据库 {db_name} 创建失败")
-                
+        logging.info("检查环境连接状态...")
+        check_environment()
+        logging.info("✅ 环境检查通过")
     except Exception as e:
-        logging.error(f"❌ 创建Hive数据库失败: {e}")
+        logging.error(f"❌ 环境检查失败: {e}")
         raise
+    
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"尝试创建Spark会话 (第 {attempt + 1}/{max_retries} 次)")
+            spark = create_spark()
+            logging.info("✅ Spark会话创建成功")
+            
+            config = load_config()
+            
+            # 收集所有需要的数据库名称
+            databases = set()
+            for table_conf in config['tables']:
+                if table_conf.get('enabled', True):
+                    hive_table = table_conf['hive_table']
+                    if '.' in hive_table:
+                        db_name = hive_table.split('.')[0]
+                        databases.add(db_name)
+            
+            logging.info(f"需要创建的数据库: {databases}")
+            
+            # 创建所有需要的数据库
+            for db_name in databases:
+                logging.info(f"正在创建Hive数据库: {db_name}")
+                spark.sql(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+                logging.info(f"✅ 数据库 {db_name} 创建成功")
+            
+            # 验证数据库创建结果
+            result = spark.sql("SHOW DATABASES").collect()
+            existing_databases = [row[0] for row in result]
+            logging.info(f"当前所有数据库: {existing_databases}")
+            
+            for db_name in databases:
+                if db_name in existing_databases:
+                    logging.info(f"✅ 验证通过: 数据库 {db_name} 存在")
+                else:
+                    logging.error(f"❌ 验证失败: 数据库 {db_name} 不存在")
+                    raise Exception(f"数据库 {db_name} 创建失败")
+            
+            # 如果成功，跳出重试循环
+            break
+            
+        except Exception as e:
+            logging.error(f"❌ 第 {attempt + 1} 次尝试失败: {e}")
+            
+            if spark:
+                try:
+                    spark.stop()
+                    logging.info("已关闭失败的Spark会话")
+                except Exception as stop_e:
+                    logging.warning(f"关闭Spark会话时出现警告: {stop_e}")
+                spark = None
+            
+            if attempt < max_retries - 1:
+                logging.info(f"等待 {retry_delay} 秒后重试...")
+                import time
+                time.sleep(retry_delay)
+            else:
+                logging.error("所有重试都失败了，抛出异常")
+                raise
+                
     finally:
         if spark:
             try:
