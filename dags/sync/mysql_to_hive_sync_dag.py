@@ -61,51 +61,81 @@ def check_environment():
 
 def create_spark():
     import os
+    import subprocess
     
     # 设置环境变量
     os.environ['JAVA_HOME'] = '/usr/lib/jvm/default-java'
     os.environ['SPARK_HOME'] = '/home/airflow/.local/lib/python3.8/site-packages/pyspark'
     
+    # 检查Java是否可用
+    try:
+        java_version = subprocess.check_output(['java', '-version'], stderr=subprocess.STDOUT, text=True)
+        logging.info(f"Java版本检查通过: {java_version.split()[0] if java_version else 'Unknown'}")
+    except Exception as e:
+        logging.error(f"Java版本检查失败: {e}")
+        raise Exception("Java环境不可用")
+    
     # 检查是否在容器环境中运行
     is_container = os.path.exists('/.dockerenv')
+    
+    # 设置JVM参数以避免内存问题
+    os.environ['PYSPARK_SUBMIT_ARGS'] = '--driver-memory 512m --executor-memory 512m pyspark-shell'
     
     builder = SparkSession.builder.appName("MySQL to Hive Sync")
     
     if is_container:
-        # 容器环境：连接到外部Spark集群
-        logging.info("检测到容器环境，连接到外部Spark集群")
-        builder = builder \
-            .master("spark://spark-master:7077") \
-            .config("spark.executor.memory", "1g") \
-            .config("spark.executor.cores", "1") \
-            .config("spark.executor.instances", "1") \
-            .config("spark.driver.memory", "512m") \
-            .config("spark.driver.maxResultSize", "256m")
+        # 容器环境：使用本地模式但连接到远程服务
+        logging.info("检测到容器环境，使用本地Spark模式连接远程服务")
+        builder = builder.master("local[2]")  # 限制为2个核心避免资源问题
     else:
         # 本地环境：使用本地模式
         logging.info("检测到本地环境，使用本地Spark模式")
         builder = builder.master("local[2]")
     
-    # 通用配置
-    return builder \
-        .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
-        .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
-        .config("spark.sql.catalogImplementation", "hive") \
-        .config("spark.sql.adaptive.enabled", "true") \
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-        .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
-        .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
-        .config("spark.network.timeout", "600s") \
-        .config("spark.sql.execution.arrow.pyspark.enabled", "false") \
-        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-        .config("spark.sql.adaptive.skewJoin.enabled", "true") \
-        .config("spark.driver.extraJavaOptions", "-Djava.security.manager=default") \
-        .config("spark.executor.extraJavaOptions", "-Djava.security.manager=default") \
-        .config("spark.sql.execution.arrow.maxRecordsPerBatch", "1000") \
-        .config("spark.rpc.askTimeout", "600s") \
-        .config("spark.rpc.lookupTimeout", "600s") \
-        .enableHiveSupport() \
-        .getOrCreate()
+    # 通用配置 - 简化配置避免复杂性
+    try:
+        spark = builder \
+            .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
+            .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
+            .config("spark.sql.catalogImplementation", "hive") \
+            .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
+            .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
+            .config("spark.driver.memory", "512m") \
+            .config("spark.driver.maxResultSize", "256m") \
+            .config("spark.network.timeout", "300s") \
+            .config("spark.rpc.askTimeout", "300s") \
+            .config("spark.rpc.lookupTimeout", "300s") \
+            .config("spark.sql.adaptive.enabled", "false") \
+            .config("spark.sql.execution.arrow.pyspark.enabled", "false") \
+            .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+            .enableHiveSupport() \
+            .getOrCreate()
+        
+        logging.info("✅ Spark会话创建成功")
+        return spark
+        
+    except Exception as e:
+        logging.error(f"创建Spark会话时出错: {e}")
+        # 尝试更简单的配置
+        logging.info("尝试使用最小配置创建Spark会话...")
+        try:
+            spark = SparkSession.builder \
+                .appName("MySQL to Hive Sync - Minimal") \
+                .master("local[1]") \
+                .config("spark.driver.memory", "256m") \
+                .config("spark.driver.maxResultSize", "128m") \
+                .config("spark.sql.catalogImplementation", "hive") \
+                .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
+                .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
+                .enableHiveSupport() \
+                .getOrCreate()
+            
+            logging.info("✅ 使用最小配置创建Spark会话成功")
+            return spark
+            
+        except Exception as e2:
+            logging.error(f"最小配置也失败: {e2}")
+            raise
 
 def create_hive_databases():
     """预创建所有需要的Hive数据库"""
