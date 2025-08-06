@@ -62,37 +62,140 @@ def check_environment():
 def create_spark():
     import os
     import subprocess
+    import shutil
     
-    # 设置环境变量
-    os.environ['JAVA_HOME'] = '/usr/lib/jvm/default-java'
-    os.environ['SPARK_HOME'] = '/home/airflow/.local/lib/python3.8/site-packages/pyspark'
+    # 容器环境的Java路径（按优先级排序）
+    container_java_paths = [
+        '/usr/local/bin/java',  # Dockerfile中创建的符号链接
+        '/usr/lib/jvm/default-java/bin/java',  # 默认安装路径
+        '/usr/bin/java',  # 系统路径
+    ]
     
-    # 检查Java是否可用
-    try:
-        java_version = subprocess.check_output(['java', '-version'], stderr=subprocess.STDOUT, text=True)
-        logging.info(f"Java版本检查通过: {java_version.split()[0] if java_version else 'Unknown'}")
-    except Exception as e:
-        logging.error(f"Java版本检查失败: {e}")
+    java_executable = None
+    
+    # 首先尝试容器环境的已知路径
+    for java_path in container_java_paths:
+        if os.path.exists(java_path) and os.access(java_path, os.X_OK):
+            java_executable = java_path
+            logging.info(f"在容器环境中找到Java: {java_path}")
+            break
+    
+    # 如果还没找到，使用shutil.which作为备选
+    if not java_executable:
+        java_executable = shutil.which('java')
+        if java_executable:
+            logging.info(f"通过which命令找到Java: {java_executable}")
+    
+    if java_executable:
+        try:
+            # 使用绝对路径执行java命令
+            java_version = subprocess.check_output([java_executable, '-version'], 
+                                                 stderr=subprocess.STDOUT, 
+                                                 text=True, 
+                                                 timeout=10)
+            version_line = java_version.split('\n')[0] if java_version else 'Unknown'
+            logging.info(f"Java版本检查通过: {version_line}")
+            logging.info(f"使用Java路径: {java_executable}")
+            
+            # 设置JAVA_HOME环境变量（容器环境已设置，但确保正确）
+            if 'JAVA_HOME' not in os.environ or not os.environ['JAVA_HOME']:
+                if java_executable == '/usr/local/bin/java':
+                    # 符号链接，使用实际的JAVA_HOME
+                    os.environ['JAVA_HOME'] = '/usr/lib/jvm/default-java'
+                else:
+                    # 计算JAVA_HOME
+                    java_home = os.path.dirname(os.path.dirname(java_executable))
+                    os.environ['JAVA_HOME'] = java_home
+                logging.info(f"设置JAVA_HOME: {os.environ['JAVA_HOME']}")
+            else:
+                logging.info(f"使用现有JAVA_HOME: {os.environ['JAVA_HOME']}")
+            
+            # 确保PATH包含Java路径
+            java_bin_dir = os.path.dirname(java_executable)
+            current_path = os.environ.get('PATH', '')
+            if java_bin_dir not in current_path:
+                os.environ['PATH'] = f"{java_bin_dir}:{current_path}"
+                logging.info(f"更新PATH包含Java路径: {java_bin_dir}")
+                
+        except subprocess.TimeoutExpired:
+            logging.error("Java版本检查超时")
+            raise Exception("Java环境检查超时")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Java版本检查失败: {e}")
+            # 在容器环境中，即使版本检查失败，Java可能仍然可用
+            logging.warning("Java版本检查失败，但在容器环境中继续尝试...")
+        except Exception as e:
+            logging.error(f"Java版本检查失败: {e}")
+            logging.warning("Java版本检查失败，但在容器环境中继续尝试...")
+    else:
+        logging.error("找不到Java可执行文件")
+        # 在容器环境中列出详细的调试信息
+        logging.info("调试信息 - 检查容器中的Java安装:")
+        debug_paths = ['/usr/lib/jvm/', '/usr/bin/', '/usr/local/bin/']
+        for location in debug_paths:
+            if os.path.exists(location):
+                try:
+                    contents = os.listdir(location)
+                    java_related = [item for item in contents if 'java' in item.lower()]
+                    if java_related:
+                        logging.info(f"在 {location} 找到Java相关文件: {java_related}")
+                        # 检查权限
+                        for item in java_related:
+                            full_path = os.path.join(location, item)
+                            if os.path.isfile(full_path):
+                                permissions = oct(os.stat(full_path).st_mode)[-3:]
+                                logging.info(f"  {full_path} 权限: {permissions}")
+                except Exception as e:
+                    logging.warning(f"无法列出 {location}: {e}")
+        
+        # 检查环境变量
+        logging.info(f"JAVA_HOME环境变量: {os.environ.get('JAVA_HOME', '未设置')}")
+        logging.info(f"PATH环境变量: {os.environ.get('PATH', '未设置')}")
+        
         raise Exception("Java环境不可用")
     
-    # 检查是否在容器环境中运行
+    # 设置Spark环境变量（容器环境已在Dockerfile中设置，但确保正确）
+    if 'SPARK_HOME' not in os.environ:
+        os.environ['SPARK_HOME'] = '/home/airflow/.local/lib/python3.8/site-packages/pyspark'
+    logging.info(f"SPARK_HOME: {os.environ['SPARK_HOME']}")
+    
+    # 确认容器环境
     is_container = os.path.exists('/.dockerenv')
+    logging.info(f"容器环境检测: {'是' if is_container else '否'}")
     
-    # 设置JVM参数以避免内存问题
-    os.environ['PYSPARK_SUBMIT_ARGS'] = '--driver-memory 512m --executor-memory 512m pyspark-shell'
-    
-    builder = SparkSession.builder.appName("MySQL to Hive Sync")
-    
+    # 容器环境的Spark配置
     if is_container:
-        # 容器环境：使用本地模式但连接到远程服务
-        logging.info("检测到容器环境，使用本地Spark模式连接远程服务")
-        builder = builder.master("local[2]")  # 限制为2个核心避免资源问题
-    else:
-        # 本地环境：使用本地模式
-        logging.info("检测到本地环境，使用本地Spark模式")
-        builder = builder.master("local[2]")
+        # 设置容器环境特定的JVM参数
+        os.environ['PYSPARK_SUBMIT_ARGS'] = '--driver-memory 512m --executor-memory 512m pyspark-shell'
+        
+        # 设置Spark临时目录（使用airflow用户可写的目录）
+        spark_temp_dirs = ['/tmp/spark', '/tmp/spark-worker', '/opt/airflow/spark-temp']
+        os.environ['SPARK_LOCAL_DIRS'] = ':'.join(spark_temp_dirs)
+        os.environ['SPARK_WORKER_DIR'] = '/tmp/spark-worker'
+        
+        # 确保临时目录存在并设置正确权限
+        for temp_dir in spark_temp_dirs:
+            try:
+                os.makedirs(temp_dir, exist_ok=True)
+                # 在容器中使用更宽松的权限
+                os.chmod(temp_dir, 0o755)
+                logging.info(f"创建Spark临时目录: {temp_dir}")
+            except Exception as e:
+                logging.warning(f"无法创建临时目录 {temp_dir}: {e}")
+        
+        # 设置Python环境变量
+        os.environ['PYSPARK_PYTHON'] = 'python3'
+        os.environ['PYSPARK_DRIVER_PYTHON'] = 'python3'
+        
+        logging.info("容器环境Spark配置完成")
     
-    # 通用配置 - 简化配置避免复杂性
+    builder = SparkSession.builder.appName("MySQL to Hive Sync - Container")
+    
+    # 容器环境使用本地模式，但配置更保守
+    logging.info("容器环境使用本地Spark模式")
+    builder = builder.master("local[1]")  # 容器环境使用单核避免资源竞争
+    
+    # 容器环境优化配置
     try:
         spark = builder \
             .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
@@ -102,40 +205,93 @@ def create_spark():
             .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
             .config("spark.driver.memory", "512m") \
             .config("spark.driver.maxResultSize", "256m") \
+            .config("spark.executor.memory", "512m") \
+            .config("spark.executor.cores", "1") \
+            .config("spark.driver.cores", "1") \
             .config("spark.network.timeout", "300s") \
             .config("spark.rpc.askTimeout", "300s") \
             .config("spark.rpc.lookupTimeout", "300s") \
             .config("spark.sql.adaptive.enabled", "false") \
             .config("spark.sql.execution.arrow.pyspark.enabled", "false") \
             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+            .config("spark.local.dir", "/tmp/spark") \
+            .config("spark.worker.dir", "/tmp/spark-worker") \
+            .config("spark.sql.adaptive.coalescePartitions.enabled", "false") \
+            .config("spark.sql.adaptive.skewJoin.enabled", "false") \
+            .config("spark.driver.bindAddress", "0.0.0.0") \
+            .config("spark.driver.host", "localhost") \
+            .config("spark.ui.enabled", "false") \
+            .config("spark.sql.execution.arrow.maxRecordsPerBatch", "1000") \
+            .config("spark.sql.shuffle.partitions", "4") \
+            .config("spark.default.parallelism", "2") \
             .enableHiveSupport() \
             .getOrCreate()
         
         logging.info("✅ Spark会话创建成功")
+        
+        # 验证Spark会话
+        spark_version = spark.version
+        logging.info(f"Spark版本: {spark_version}")
+        
+        # 测试基本功能
+        test_df = spark.range(1).select("id")
+        test_count = test_df.count()
+        logging.info(f"Spark基本功能测试通过，测试数据条数: {test_count}")
+        
         return spark
         
     except Exception as e:
         logging.error(f"创建Spark会话时出错: {e}")
-        # 尝试更简单的配置
-        logging.info("尝试使用最小配置创建Spark会话...")
+        import traceback
+        logging.error(f"详细错误信息: {traceback.format_exc()}")
+        
+        # 尝试容器环境的最小配置
+        logging.info("尝试使用容器环境最小配置创建Spark会话...")
         try:
             spark = SparkSession.builder \
-                .appName("MySQL to Hive Sync - Minimal") \
+                .appName("MySQL to Hive Sync - Container Minimal") \
                 .master("local[1]") \
                 .config("spark.driver.memory", "256m") \
                 .config("spark.driver.maxResultSize", "128m") \
+                .config("spark.executor.memory", "256m") \
+                .config("spark.local.dir", "/tmp/spark") \
+                .config("spark.worker.dir", "/tmp/spark-worker") \
+                .config("spark.driver.bindAddress", "0.0.0.0") \
+                .config("spark.driver.host", "localhost") \
+                .config("spark.ui.enabled", "false") \
                 .config("spark.sql.catalogImplementation", "hive") \
                 .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
                 .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
+                .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
                 .enableHiveSupport() \
                 .getOrCreate()
             
-            logging.info("✅ 使用最小配置创建Spark会话成功")
+            logging.info("✅ 使用容器环境最小配置创建Spark会话成功")
             return spark
             
         except Exception as e2:
-            logging.error(f"最小配置也失败: {e2}")
-            raise
+            logging.error(f"容器环境最小配置也失败: {e2}")
+            logging.error(f"最小配置详细错误: {traceback.format_exc()}")
+            
+            # 最后尝试：不使用Hive支持的纯Spark会话
+            logging.info("最后尝试：创建不带Hive支持的纯Spark会话...")
+            try:
+                spark = SparkSession.builder \
+                    .appName("MySQL to Hive Sync - Pure Spark") \
+                    .master("local[1]") \
+                    .config("spark.driver.memory", "256m") \
+                    .config("spark.executor.memory", "256m") \
+                    .config("spark.local.dir", "/tmp/spark") \
+                    .config("spark.ui.enabled", "false") \
+                    .getOrCreate()
+                
+                logging.warning("⚠️ 创建了不带Hive支持的Spark会话，功能可能受限")
+                return spark
+                
+            except Exception as e3:
+                logging.error(f"所有配置都失败: {e3}")
+                logging.error(f"纯Spark配置详细错误: {traceback.format_exc()}")
+                raise Exception("无法创建任何Spark会话配置")
 
 def create_hive_databases():
     """预创建所有需要的Hive数据库"""
