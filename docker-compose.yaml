@@ -149,6 +149,46 @@ services:
     networks:
       - data-pipeline
 
+  # Spark Thrift Server for SQL access
+  spark-thrift-server:
+    image: docker.1ms.run/bde2020/spark-master:3.3.0-hadoop3.3
+    depends_on:
+      spark-master:
+        condition: service_healthy
+      hive-metastore:
+        condition: service_healthy
+    environment:
+      - SPARK_MASTER=spark://${SPARK_MASTER_HOST}:7077
+      - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
+      - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
+      - HIVE_SITE_CONF_hive_metastore_uris=thrift://hive-metastore:9083
+    volumes:
+      - ./spark_jobs:/opt/spark-jobs
+      - ./config:/opt/spark-config
+    ports:
+      - "${SPARK_THRIFT_PORT:-10000}:10000"
+      - "${SPARK_THRIFT_UI_PORT:-4040}:4040"
+    networks:
+      - data-pipeline
+    command: >
+      bash -c "
+        /spark/bin/spark-submit \
+          --class org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 \
+          --master spark://${SPARK_MASTER_HOST}:7077 \
+          --conf spark.sql.hive.metastore.uris=thrift://hive-metastore:9083 \
+          --conf spark.serializer=org.apache.spark.serializer.KryoSerializer \
+          --conf spark.sql.adaptive.enabled=true \
+          --conf spark.sql.adaptive.coalescePartitions.enabled=true \
+          --hiveconf hive.server2.thrift.port=10000 \
+          --hiveconf hive.server2.thrift.bind.host=0.0.0.0
+      "
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "10000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
   # Airflow 初始化服务
   airflow-init:
     build:
