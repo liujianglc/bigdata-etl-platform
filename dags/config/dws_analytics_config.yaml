@@ -1,0 +1,103 @@
+# DWS Orders Analytics Configuration
+
+# Spark Configuration
+spark_config:
+  app_name_prefix: "DWS Orders Analytics"
+  master: "local[1]"
+  driver_memory: "512m"
+  executor_memory: "512m"
+  executor_cores: "1"
+  driver_cores: "1"
+  shuffle_partitions: "4"
+  default_parallelism: "2"
+
+# HDFS Configuration
+hdfs_config:
+  namenode_url: "hdfs://namenode:9000"
+  warehouse_dir: "hdfs://namenode:9000/user/hive/warehouse"
+  dws_database: "dws_db"
+  
+# Table Configuration
+tables:
+  daily_summary:
+    name: "dws_orders_daily_summary"
+    partition_by: "dt"
+    description: "Daily aggregated orders summary"
+    
+  monthly_summary:
+    name: "dws_orders_monthly_summary"
+    partition_by: "dt"
+    description: "Monthly aggregated orders summary"
+    
+  customer_analytics:
+    name: "dws_customer_analytics"
+    partition_by: "dt"
+    description: "Customer behavior and value analytics"
+
+# Business Rules
+business_rules:
+  customer_segments:
+    platinum_threshold: 50000
+    gold_threshold: 20000
+    silver_threshold: 5000
+    # bronze: below silver_threshold
+    
+  customer_status:
+    active_days: 7
+    recent_days: 30
+    inactive_days: 90
+    # dormant: above inactive_days
+    
+  order_size_categories:
+    large_threshold: 10000
+    medium_threshold: 5000
+    small_threshold: 1000
+    # micro: below small_threshold
+    
+  performance_grades:
+    excellent_completion_rate: 95
+    good_completion_rate: 90
+    fair_completion_rate: 80
+    # poor: below fair_completion_rate
+
+# Analysis Periods
+analysis_periods:
+  customer_analytics_days: 30
+  weekly_trend_days: 7
+  
+# Data Quality Thresholds
+quality_thresholds:
+  min_daily_records: 1
+  min_monthly_records: 1
+  min_customer_records: 1
+  min_views_created: 5
+  
+# Views Configuration
+views:
+  weekly_trend:
+    name: "dws_orders_weekly_trend"
+    description: "Last 7 days order trends"
+    
+  daily_kpi:
+    name: "dws_daily_kpi"
+    description: "Daily KPI dashboard view"
+    
+  monthly_trend:
+    name: "dws_orders_monthly_trend"
+    description: "Monthly order trends"
+    
+  monthly_business_metrics:
+    name: "dws_monthly_business_metrics"
+    description: "Monthly business metrics"
+    
+  customer_value_segments:
+    name: "dws_customer_value_segments"
+    description: "Customer value segmentation"
+    
+  customer_status_analysis:
+    name: "dws_customer_status_analysis"
+    description: "Customer status analysis"
+    
+  high_value_customers:
+    name: "dws_high_value_customers"
+    description: "High value customers view"

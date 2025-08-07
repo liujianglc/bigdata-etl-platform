@@ -39,3 +39,10 @@ tables:
     partition_column: dt
     sync_mode: incremental
     enabled: true
+
+  - mysql_table: Employees
+    hive_table: ods.Employees
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    enabled: true

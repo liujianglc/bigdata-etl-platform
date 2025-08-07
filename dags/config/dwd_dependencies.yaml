@@ -1,0 +1,71 @@
+# DWD层依赖配置
+# 定义DWD层各表对ODS层表的依赖关系
+
+dependencies:
+  # Orders DWD层依赖
+  dwd_orders:
+    upstream_dag: "sync_mysql_to_hive_dag"  # 上游DAG
+    required_tables:
+      - "ods.Orders"      # 主表
+      - "ods.Customers"   # 客户维度
+      - "ods.Employees"   # 员工维度
+    schedule_delay: "1 minute"  # 在上游DAG完成后1小时执行
+    
+  # 未来的其他DWD表依赖
+  dwd_customers:
+    upstream_dag: "sync_mysql_to_hive_dag"
+    required_tables:
+      - "ods.customers"
+    schedule_delay: "1 hour"
+    
+  dwd_products:
+    upstream_dag: "sync_mysql_to_hive_dag"
+    required_tables:
+      - "ods.products"
+    schedule_delay: "1 hour"
+    
+  dwd_inventory:
+    upstream_dag: "sync_mysql_to_hive_dag"
+    required_tables:
+      - "ods.inventory"
+      - "ods.products"
+      - "ods.warehouses"
+    schedule_delay: "1 hour"
+
+# 数据质量检查配置
+data_quality:
+  # 数据新鲜度检查（小时）
+  freshness_threshold: 24
+  
+  # 数据完整性检查
+  completeness_checks:
+    orders:
+      required_fields: ["OrderID", "CustomerID", "OrderDate", "Status"]
+      null_tolerance: 0.01  # 1%的空值容忍度
+    
+  # 数据一致性检查
+  consistency_checks:
+    orders:
+      # 检查订单金额是否合理
+      amount_range: [0, 1000000]
+      # 检查日期逻辑
+      date_logic: "RequiredDate >= OrderDate"
+
+# 性能优化配置
+performance:
+  # Spark配置
+  spark:
+    driver_memory: "1g"
+    executor_memory: "1g"
+    executor_cores: 2
+    
+  # 分区策略
+  partitioning:
+    orders:
+      partition_by: ["year", "month"]
+      partition_size_mb: 128
+      
+  # 压缩配置
+  compression:
+    format: "parquet"
+    codec: "snappy"
