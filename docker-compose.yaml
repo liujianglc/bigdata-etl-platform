@@ -116,6 +116,10 @@ services:
       - INIT_DAEMON_STEP=setup_spark
       - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
       - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
+      # Spark Master 优化配置
+      - SPARK_MASTER_OPTS=-Xmx2g -XX:+UseG1GC -XX:+UseStringDeduplication
+      - SPARK_MASTER_WEBUI_PORT=8080
+      - SPARK_MASTER_PORT=${SPARK_MASTER_PORT:-7077}
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
@@ -140,9 +144,12 @@ services:
     environment:
       - SPARK_MASTER=spark://${SPARK_MASTER_HOST}:7077
       - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
-      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
-      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY}
+      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES:-4}
+      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY:-8g}
+      - SPARK_WORKER_INSTANCES=${SPARK_WORKER_INSTANCES:-1}
       - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
+      # JVM 优化配置
+      - SPARK_WORKER_OPTS=-Xmx${SPARK_WORKER_JVM_MEMORY:-2g} -XX:+UseG1GC -XX:+UseStringDeduplication
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
@@ -162,8 +169,8 @@ services:
       - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
       - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
       - HIVE_SITE_CONF_hive_metastore_uris=thrift://hive-metastore:9083
-      - SPARK_EXECUTOR_MEMORY=${SPARK_EXECUTOR_MEMORY:-1g}
-      - SPARK_DRIVER_MEMORY=${SPARK_DRIVER_MEMORY:-512m}
+      - SPARK_EXECUTOR_MEMORY=${SPARK_THRIFT_EXECUTOR_MEMORY:-2g}
+      - SPARK_DRIVER_MEMORY=${SPARK_THRIFT_DRIVER_MEMORY:-2g}
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
@@ -182,18 +189,28 @@ services:
         /spark/bin/spark-submit \
           --class org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 \
           --master spark://spark-master:7077 \
-          --driver-memory 512m \
-          --executor-memory 1g \
-          --executor-cores 1 \
-          --total-executor-cores 2 \
+          --driver-memory ${SPARK_THRIFT_DRIVER_MEMORY:-2g} \
+          --executor-memory ${SPARK_THRIFT_EXECUTOR_MEMORY:-2g} \
+          --executor-cores ${SPARK_THRIFT_EXECUTOR_CORES:-2} \
+          --total-executor-cores ${SPARK_THRIFT_TOTAL_CORES:-4} \
+          --num-executors ${SPARK_THRIFT_NUM_EXECUTORS:-2} \
           --jars /opt/spark/jars/custom/*.jar \
           --conf spark.sql.hive.metastore.uris=thrift://hive-metastore:9083 \
           --conf spark.serializer=org.apache.spark.serializer.KryoSerializer \
           --conf spark.sql.adaptive.enabled=true \
           --conf spark.sql.adaptive.coalescePartitions.enabled=true \
+          --conf spark.sql.adaptive.skewJoin.enabled=true \
+          --conf spark.sql.adaptive.localShuffleReader.enabled=true \
+          --conf spark.sql.adaptive.advisoryPartitionSizeInBytes=128MB \
           --conf spark.sql.warehouse.dir=hdfs://namenode:9000/user/hive/warehouse \
           --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
           --conf spark.sql.catalogImplementation=hive \
+          --conf spark.sql.execution.arrow.pyspark.enabled=true \
+          --conf spark.sql.execution.arrow.maxRecordsPerBatch=10000 \
+          --conf spark.network.timeout=800s \
+          --conf spark.executor.heartbeatInterval=60s \
+          --conf spark.dynamicAllocation.enabled=false \
+          --conf spark.shuffle.service.enabled=false \
           --hiveconf hive.server2.thrift.port=10000 \
           --hiveconf hive.server2.thrift.bind.host=0.0.0.0 \
           --hiveconf hive.metastore.uris=thrift://hive-metastore:9083 \
