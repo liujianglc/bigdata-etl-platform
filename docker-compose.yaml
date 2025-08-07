@@ -117,9 +117,10 @@ services:
       - CORE_CONF_fs_defaultFS=hdfs://${HDFS_NAMENODE_HOST}:9000
       - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
       # Spark Master 优化配置
-      - SPARK_MASTER_OPTS=-Xmx2g -XX:+UseG1GC -XX:+UseStringDeduplication
+      - SPARK_MASTER_OPTS=-XX:+UseG1GC -XX:+UseStringDeduplication
       - SPARK_MASTER_WEBUI_PORT=8080
       - SPARK_MASTER_PORT=${SPARK_MASTER_PORT:-7077}
+      - SPARK_DAEMON_MEMORY=${SPARK_MASTER_MEMORY:-2g}
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
@@ -149,7 +150,8 @@ services:
       - SPARK_WORKER_INSTANCES=${SPARK_WORKER_INSTANCES:-1}
       - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
       # JVM 优化配置
-      - SPARK_WORKER_OPTS=-Xmx${SPARK_WORKER_JVM_MEMORY:-2g} -XX:+UseG1GC -XX:+UseStringDeduplication
+      - SPARK_WORKER_OPTS=-XX:+UseG1GC -XX:+UseStringDeduplication
+      - SPARK_DAEMON_MEMORY=${SPARK_WORKER_JVM_MEMORY:-2g}
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
