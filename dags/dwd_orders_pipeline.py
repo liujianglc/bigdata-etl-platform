@@ -107,8 +107,30 @@ def extract_orders_data(**context):
         
         logging.info(f"提取时间范围: {start_date} 到 {batch_date}")
         
+        # 首先检查可用的分区
+        try:
+            partitions_df = spark.sql("SHOW PARTITIONS ods.Orders")
+            available_partitions = [row[0] for row in partitions_df.collect()]
+            logging.info(f"Orders表可用分区: {available_partitions[-5:]}")  # 显示最近5个分区
+            
+            # 检查当前批次分区是否存在
+            target_partition = f"dt={batch_date}"
+            if target_partition not in available_partitions:
+                logging.warning(f"目标分区 {target_partition} 不存在")
+                # 使用最新的可用分区
+                if available_partitions:
+                    latest_partition = available_partitions[-1]
+                    latest_date = latest_partition.split('=')[1]
+                    logging.info(f"使用最新分区: {latest_partition}")
+                    batch_date = latest_date
+                else:
+                    raise Exception("没有找到任何可用分区")
+        except Exception as e:
+            logging.warning(f"无法获取分区信息: {e}")
+            logging.info("继续使用原始批次日期")
+        
         # 从Hive读取Orders数据，关联维度表
-        # 注意：这里使用Spark SQL，语法与MySQL略有不同
+        # 先尝试不加分区限制的查询，如果数据量太大再加限制
         orders_query = f"""
         SELECT 
             o.OrderID,
@@ -132,21 +154,36 @@ def extract_orders_data(**context):
             o.CreatedDate,
             o.UpdatedDate
         FROM ods.Orders o
-        LEFT JOIN ods.Customers c ON o.CustomerID = c.CustomerID
-        LEFT JOIN ods.Employees e ON o.CreatedBy = e.EmployeeID
-        WHERE (DATE(o.CreatedDate) >= '{start_date}' 
-           OR DATE(o.UpdatedDate) >= '{start_date}')
-           AND o.dt = '{batch_date}'  -- 只处理当前批次的分区数据
+        LEFT JOIN ods.Customers c ON o.CustomerID = c.CustomerID AND c.dt = '{batch_date}'
+        LEFT JOIN ods.Employees e ON o.CreatedBy = e.EmployeeID AND e.dt = '{batch_date}'
+        WHERE o.dt = '{batch_date}'
         """
         
         # 执行查询
         logging.info("执行Hive查询...")
+        logging.info(f"查询语句: {orders_query}")
         try:
             df = spark.sql(orders_query)
             logging.info("✅ Hive查询执行成功")
         except Exception as e:
             logging.error(f"❌ Hive查询执行失败: {e}")
             logging.error(f"查询语句: {orders_query}")
+            
+            # 尝试简化查询进行调试
+            try:
+                logging.info("尝试简化查询进行调试...")
+                simple_query = f"SELECT COUNT(*) as cnt FROM ods.Orders WHERE dt = '{batch_date}'"
+                simple_result = spark.sql(simple_query).collect()[0]['cnt']
+                logging.info(f"Orders表在分区 dt={batch_date} 中有 {simple_result} 条记录")
+                
+                if simple_result == 0:
+                    # 检查所有分区的数据
+                    all_data_query = "SELECT COUNT(*) as cnt FROM ods.Orders"
+                    all_result = spark.sql(all_data_query).collect()[0]['cnt']
+                    logging.info(f"Orders表总共有 {all_result} 条记录")
+            except Exception as debug_e:
+                logging.error(f"调试查询也失败: {debug_e}")
+            
             raise
         
         # 添加计算字段（使用Spark SQL函数）
@@ -290,6 +327,40 @@ def transform_orders_data(**context):
         # 获取提取的数据文件
         extract_file = context['task_instance'].xcom_pull(task_ids='extract_orders_data', key='extract_file')
         temp_dir = context['task_instance'].xcom_pull(task_ids='extract_orders_data', key='temp_dir')
+        record_count = context['task_instance'].xcom_pull(task_ids='extract_orders_data', key='record_count')
+        
+        # 检查是否有数据需要转换
+        if record_count == 0:
+            logging.warning("⚠️ 提取阶段没有数据，创建空的转换结果")
+            # 创建空的DataFrame结构
+            empty_df = pd.DataFrame()
+            
+            # 创建空的转换文件
+            import tempfile
+            transform_temp_dir = tempfile.mkdtemp(prefix='orders_transform_empty_')
+            transform_file = os.path.join(transform_temp_dir, f'orders_transform_empty_{datetime.now().strftime("%Y%m%d_%H%M%S")}.parquet')
+            
+            # 保存空文件（需要有基本结构）
+            empty_stats = {
+                'total_records': 0,
+                'quality_distribution': {},
+                'status_distribution': {},
+                'priority_distribution': {},
+                'delayed_orders': 0,
+                'avg_processing_days': 0
+            }
+            
+            # 创建一个包含基本列结构的空DataFrame
+            columns = ['OrderID', 'CustomerID', 'CustomerName', 'OrderStatus', 'TotalAmount', 
+                      'etl_created_date', 'etl_updated_date', 'etl_batch_id', 'etl_source_system']
+            empty_df = pd.DataFrame(columns=columns)
+            empty_df.to_parquet(transform_file, index=False)
+            
+            context['task_instance'].xcom_push(key='transform_file', value=transform_file)
+            context['task_instance'].xcom_push(key='transform_temp_dir', value=transform_temp_dir)
+            context['task_instance'].xcom_push(key='transform_stats', value=empty_stats)
+            
+            return transform_file
         
         # 读取数据 - 如果是目录则读取整个目录，如果是文件则直接读取
         try:
@@ -481,6 +552,21 @@ def load_orders_to_hdfs(**context):
         pandas_df = pd.read_parquet(transform_file)
         logging.info(f"读取到 {len(pandas_df)} 条转换后的记录")
         
+        # 检查数据是否为空
+        if len(pandas_df) == 0:
+            logging.warning("⚠️ 转换后的数据为空，跳过HDFS加载")
+            # 创建空的加载摘要
+            empty_summary = {
+                'total_partitions': 0,
+                'total_records': 0,
+                'total_size': 0,
+                'partitions': [],
+                'status': 'SKIPPED_EMPTY_DATA'
+            }
+            context['task_instance'].xcom_push(key='hdfs_load_summary', value=empty_summary)
+            context['task_instance'].xcom_push(key='hdfs_base_path', value='')
+            return 'SKIPPED_EMPTY_DATA'
+        
         # 创建Spark会话 - 使用与mysql_to_hive_sync_dag相同的配置
         spark = SparkSession.builder \
             .appName("DWD Orders Load to HDFS") \
@@ -636,6 +722,13 @@ def create_orders_hive_views(**context):
         hdfs_base_path = context['task_instance'].xcom_pull(task_ids='load_orders_to_hdfs', key='hdfs_base_path')
         load_summary = context['task_instance'].xcom_pull(task_ids='load_orders_to_hdfs', key='hdfs_load_summary')
         
+        # 检查是否跳过了加载（因为数据为空）
+        if hdfs_base_path == 'SKIPPED_EMPTY_DATA' or load_summary.get('status') == 'SKIPPED_EMPTY_DATA':
+            logging.warning("⚠️ 由于数据为空，跳过视图创建")
+            context['task_instance'].xcom_push(key='table_name', value='')
+            context['task_instance'].xcom_push(key='views_created', value=0)
+            return 'SKIPPED_EMPTY_DATA'
+        
         # 创建Spark会话来创建视图
         spark = SparkSession.builder \
             .appName("Create DWD Orders Views") \
@@ -752,6 +845,23 @@ def validate_orders_dwd(**context):
         table_name = context['task_instance'].xcom_pull(task_ids='create_orders_hive_views', key='table_name')
         load_summary = context['task_instance'].xcom_pull(task_ids='load_orders_to_hdfs', key='hdfs_load_summary')
         transform_stats = context['task_instance'].xcom_pull(task_ids='transform_orders_data', key='transform_stats')
+        
+        # 检查是否因为数据为空而跳过了处理
+        if (table_name == 'SKIPPED_EMPTY_DATA' or table_name == '' or 
+            load_summary.get('status') == 'SKIPPED_EMPTY_DATA'):
+            logging.warning("⚠️ 由于数据为空，验证结果标记为警告状态")
+            empty_validation = {
+                'table_created': False,
+                'partitions_loaded': 0,
+                'records_loaded': 0,
+                'data_quality_check': {},
+                'business_rules_check': {},
+                'overall_quality_score': 70,  # 警告级别
+                'issues': ['没有数据需要处理 - 可能是上游数据源为空或过滤条件过于严格'],
+                'validation_status': 'WARNING'
+            }
+            context['task_instance'].xcom_push(key='validation_results', value=empty_validation)
+            return empty_validation
         
         # 数据质量验证规则
         validation_results = {

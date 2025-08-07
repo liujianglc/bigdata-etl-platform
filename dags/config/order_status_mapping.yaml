@@ -1,8 +1,8 @@
-# 订单状态映射配置
-# 用于将中文状态标准化为英文状态
+# Order Status Mapping Configuration
+# 用于DWD Orders Pipeline的状态标准化
 
 order_status_mapping:
-  # 中文状态 -> 英文标准状态
+  # 中文状态映射
   '待确认': 'Pending'
   '待处理': 'Pending'
   '已确认': 'Confirmed'
@@ -10,70 +10,56 @@ order_status_mapping:
   '已发货': 'Shipped'
   '已完成': 'Delivered'
   '已取消': 'Cancelled'
-
-# 状态分组定义
-status_groups:
-  # 活跃状态（正在处理中的订单）
-  active_statuses:
-    - 'Pending'
-    - 'Confirmed'
-    - 'Shipping'
-    - 'Shipped'
   
-  # 完成状态（已结束的订单）
-  completed_statuses:
-    - 'Delivered'
-    - 'Cancelled'
+  # 英文状态映射（保持一致性）
+  'Pending': 'Pending'
+  'Confirmed': 'Confirmed'
+  'Shipping': 'Shipping'
+  'Shipped': 'Shipped'
+  'Delivered': 'Delivered'
+  'Cancelled': 'Cancelled'
   
-  # 可能延期的状态（需要检查交付时间）
-  delayable_statuses:
-    - 'Pending'
-    - 'Confirmed'
-    - 'Shipping'
-    - 'Shipped'
+  # 其他可能的状态
+  'Processing': 'Confirmed'
+  'In Transit': 'Shipping'
+  'Completed': 'Delivered'
+  'Canceled': 'Cancelled'
 
-# 支付状态映射
 payment_status_mapping:
+  # 中文支付状态映射
   '未支付': 'Unpaid'
   '已支付': 'Paid'
   '部分支付': 'Partial'
   '已退款': 'Refunded'
+  
+  # 英文支付状态映射
+  'Unpaid': 'Unpaid'
+  'Paid': 'Paid'
+  'Partial': 'Partial'
+  'Refunded': 'Refunded'
+  
+  # 其他可能的状态
+  'Pending Payment': 'Unpaid'
+  'Payment Received': 'Paid'
+  'Partially Paid': 'Partial'
+  'Refund Processed': 'Refunded'
 
-# 业务规则配置
-business_rules:
-  # 订单优先级规则
-  priority_rules:
-    high_amount_threshold: 10000  # 高价值订单金额阈值
-    medium_amount_threshold: 5000  # 中等价值订单金额阈值
-    vip_customer_types: ['VIP', '大客户', '重要客户']
+# 数据质量规则
+data_quality_rules:
+  required_fields:
+    - OrderID
+    - CustomerID
+    - OrderDate
+    - OrderStatus
+    - TotalAmount
   
-  # 延期判断规则
-  delay_rules:
-    # 超过要求日期即为延期
-    strict_delay_check: true
-    # 延期容忍天数（如果需要宽松判断）
-    delay_tolerance_days: 0
-  
-  # 数据质量评分规则
-  quality_scoring:
-    missing_customer_penalty: 10
-    missing_address_penalty: 15
-    missing_required_date_penalty: 5
-    negative_amount_penalty: 20
-    invalid_date_logic_penalty: 15
-
-# 报表和分析配置
-analytics:
-  # 订单规模分类
-  order_size_categories:
-    large: 10000    # 大订单
-    medium: 5000    # 中订单
-    small: 1000     # 小订单
-    # 小于1000为微订单
-  
-  # 关键指标定义
-  kpi_definitions:
-    on_time_delivery_rate: "按时交付率"
-    average_processing_days: "平均处理天数"
-    order_completion_rate: "订单完成率"
-    high_value_order_ratio: "高价值订单占比"
+  validation_rules:
+    min_amount: 0
+    max_lead_time_days: 365
+    valid_statuses:
+      - Pending
+      - Confirmed
+      - Shipping
+      - Shipped
+      - Delivered
+      - Cancelled
