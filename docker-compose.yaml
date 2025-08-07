@@ -181,9 +181,9 @@ services:
         sleep 30
         /spark/bin/spark-submit \
           --class org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 \
-          --master spark://$${SPARK_MASTER_HOST}:7077 \
-          --driver-memory $${SPARK_DRIVER_MEMORY:-512m} \
-          --executor-memory $${SPARK_EXECUTOR_MEMORY:-1g} \
+          --master spark://spark-master:7077 \
+          --driver-memory 512m \
+          --executor-memory 1g \
           --executor-cores 1 \
           --total-executor-cores 2 \
           --jars /opt/spark/jars/custom/*.jar \
@@ -191,16 +191,16 @@ services:
           --conf spark.serializer=org.apache.spark.serializer.KryoSerializer \
           --conf spark.sql.adaptive.enabled=true \
           --conf spark.sql.adaptive.coalescePartitions.enabled=true \
-          --conf spark.sql.warehouse.dir=hdfs://$${HDFS_NAMENODE_HOST}:9000/user/hive/warehouse \
-          --conf spark.hadoop.fs.defaultFS=hdfs://$${HDFS_NAMENODE_HOST}:9000 \
+          --conf spark.sql.warehouse.dir=hdfs://namenode:9000/user/hive/warehouse \
+          --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
           --conf spark.sql.catalogImplementation=hive \
           --hiveconf hive.server2.thrift.port=10000 \
           --hiveconf hive.server2.thrift.bind.host=0.0.0.0 \
           --hiveconf hive.metastore.uris=thrift://hive-metastore:9083 \
           --hiveconf javax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/hive_metastore \
           --hiveconf javax.jdo.option.ConnectionDriverName=org.postgresql.Driver \
-          --hiveconf javax.jdo.option.ConnectionUserName=$${HIVE_METASTORE_USER} \
-          --hiveconf javax.jdo.option.ConnectionPassword=$${HIVE_METASTORE_PASSWORD}
+          --hiveconf javax.jdo.option.ConnectionUserName=hive \
+          --hiveconf javax.jdo.option.ConnectionPassword=hive
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "10000"]
       interval: 45s
