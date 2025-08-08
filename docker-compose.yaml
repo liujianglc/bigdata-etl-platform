@@ -213,7 +213,7 @@ services:
           --conf spark.executor.heartbeatInterval=60s \
           --conf spark.dynamicAllocation.enabled=false \
           --conf spark.shuffle.service.enabled=false \
-          --conf spark.sql.thriftServer.incrementalCollect=true
+          --conf spark.sql.thriftServer.incrementalCollect=true \
           --hiveconf hive.server2.thrift.port=10000 \
           --hiveconf hive.server2.thrift.bind.host=0.0.0.0 \
           --hiveconf hive.metastore.uris=thrift://hive-metastore:9083 \
