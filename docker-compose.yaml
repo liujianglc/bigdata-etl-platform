@@ -187,7 +187,14 @@ services:
       - bash
       - -c
       - |
-        sleep 30
+        echo "Waiting for Hive Metastore to be ready..."
+        until nc -z hive-metastore 9083; do
+          echo "Hive Metastore is unavailable - sleeping"
+          sleep 5
+        done
+        echo "Hive Metastore is ready"
+        
+        echo "Starting Spark Thrift Server..."
         /spark/bin/spark-submit \
           --class org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 \
           --master spark://spark-master:7077 \
@@ -214,6 +221,9 @@ services:
           --conf spark.dynamicAllocation.enabled=false \
           --conf spark.shuffle.service.enabled=false \
           --conf spark.sql.thriftServer.incrementalCollect=true \
+          --conf spark.hadoop.hive.metastore.uris=thrift://hive-metastore:9083 \
+          --conf spark.sql.hive.metastore.version=2.3.2 \
+          --conf spark.sql.hive.metastore.jars=builtin \
           --hiveconf hive.server2.thrift.port=10000 \
           --hiveconf hive.server2.thrift.bind.host=0.0.0.0 \
           --hiveconf hive.metastore.uris=thrift://hive-metastore:9083 \
