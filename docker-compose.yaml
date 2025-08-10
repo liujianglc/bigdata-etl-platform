@@ -223,7 +223,7 @@ services:
           --conf spark.sql.thriftServer.incrementalCollect=true \
           --conf spark.hadoop.hive.metastore.uris=thrift://hive-metastore:9083 \
           --conf spark.sql.hive.metastore.version=2.3.2 \
-          --conf spark.sql.hive.metastore.jars=builtin \
+          --conf spark.sql.hive.metastore.jars=maven \
           --hiveconf hive.server2.thrift.port=10000 \
           --hiveconf hive.server2.thrift.bind.host=0.0.0.0 \
           --hiveconf hive.metastore.uris=thrift://hive-metastore:9083 \
