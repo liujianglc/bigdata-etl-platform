@@ -241,6 +241,9 @@ services:
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
       AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
+      # 时区配置
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Asia/Shanghai'
+      TZ: 'Asia/Shanghai'
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
@@ -248,6 +251,8 @@ services:
       - ./plugins:/opt/airflow/plugins
       - ./setup-connections-enhanced.py:/opt/airflow/setup-connections-enhanced.py
       - ./init-airflow-complete.sh:/opt/airflow/init-airflow-complete.sh
+      - /etc/localtime:/etc/localtime:ro
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
     networks:
       - data-pipeline
     user: "0:0"  # 以root用户运行初始化，确保目录权限正确
@@ -285,6 +290,9 @@ services:
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
       AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
+      # 时区配置
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Asia/Shanghai'
+      TZ: 'Asia/Shanghai'
       # SQLAlchemy 连接池配置 - 修复事务问题
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
       AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
@@ -297,6 +305,8 @@ services:
       - ./config:/opt/airflow/config
       - ./plugins:/opt/airflow/plugins
       - ./spark_jobs:/opt/airflow/spark_jobs
+      - /etc/localtime:/etc/localtime:ro
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
     ports:
       - "${AIRFLOW_WEBSERVER_PORT}:8080"
     command: webserver
@@ -331,6 +341,9 @@ services:
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
       AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
+      # 时区配置
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Asia/Shanghai'
+      TZ: 'Asia/Shanghai'
       # SQLAlchemy 连接池配置 - 修复事务问题
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
       AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
@@ -347,6 +360,8 @@ services:
       - ./config:/opt/airflow/config
       - ./plugins:/opt/airflow/plugins
       - ./spark_jobs:/opt/airflow/spark_jobs
+      - /etc/localtime:/etc/localtime:ro
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
     command: scheduler
     user: "50000:0"  # 使用airflow用户ID，组ID为root以确保权限
     networks:
@@ -379,6 +394,9 @@ services:
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
       AIRFLOW__LOGGING__LOGGING_LEVEL: '${LOG_LEVEL}'
+      # 时区配置
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Asia/Shanghai'
+      TZ: 'Asia/Shanghai'
       # SQLAlchemy 连接池配置 - 修复事务问题
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
       AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
@@ -391,6 +409,8 @@ services:
       - ./config:/opt/airflow/config
       - ./plugins:/opt/airflow/plugins
       - ./spark_jobs:/opt/airflow/spark_jobs
+      - /etc/localtime:/etc/localtime:ro
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
     command: celery worker
     user: "50000:0"  # 使用airflow用户ID，组ID为root以确保权限
     networks:

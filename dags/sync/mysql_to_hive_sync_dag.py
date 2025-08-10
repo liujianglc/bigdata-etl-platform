@@ -1,11 +1,16 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
+from airflow.utils.dates import days_ago
 import yaml
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import lit
 import logging
+import pendulum
+
+# 设置时区
+local_tz = pendulum.timezone("Asia/Shanghai")
 
 CONFIG_PATH = "/opt/airflow/config/mysql_to_hive_config.yaml"  # 放在挂载目录中
 DEFAULT_ARGS = {
@@ -632,8 +637,8 @@ def generate_tasks(dag, config):
 with DAG(
     dag_id="sync_mysql_to_hive_dag",
     default_args=DEFAULT_ARGS,
-    schedule_interval="0 2 * * *",  # 每天凌晨 2 点执行
-    start_date=datetime(2025, 8, 10),  # 更新开始日期为今天
+    schedule_interval="0 2 * * *",  # 每天凌晨 2 点执行（中国时间）
+    start_date=datetime(2025, 8, 10, tzinfo=local_tz),  # 使用中国时区
     catchup=False,
     max_active_runs=1,
     max_active_tasks=3,  # 限制并发任务数
