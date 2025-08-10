@@ -1,0 +1,125 @@
+# OrderDetails状态映射配置文件
+# 用于标准化订单明细状态字段
+
+orderdetail_status_mapping:
+  # 中文状态到英文标准状态的映射
+  '待配货': 'Pending'
+  '配货中': 'Picking'
+  '已配货': 'Picked'
+  '待发货': 'Ready'
+  '已发货': 'Shipped'
+  '配送中': 'InTransit'
+  '已完成': 'Delivered'
+  '已取消': 'Cancelled'
+  '退货': 'Returned'
+  '换货': 'Exchanged'
+  
+  # 英文状态标准化
+  'pending': 'Pending'
+  'picking': 'Picking'
+  'picked': 'Picked'
+  'ready': 'Ready'
+  'shipped': 'Shipped'
+  'in_transit': 'InTransit'
+  'delivered': 'Delivered'
+  'cancelled': 'Cancelled'
+  'returned': 'Returned'
+  'exchanged': 'Exchanged'
+
+product_category_mapping:
+  # 中文产品类别到英文标准类别的映射
+  '电子产品': 'Electronics'
+  '电子设备': 'Electronics'
+  '数码产品': 'Electronics'
+  '服装': 'Clothing'
+  '服饰': 'Clothing'
+  '鞋帽': 'Clothing'
+  '食品': 'Food'
+  '食物': 'Food'
+  '饮料': 'Beverages'
+  '家具': 'Furniture'
+  '家居': 'Home'
+  '装饰': 'Decoration'
+  '图书': 'Books'
+  '书籍': 'Books'
+  '文具': 'Stationery'
+  '玩具': 'Toys'
+  '运动': 'Sports'
+  '健康': 'Health'
+  '美容': 'Beauty'
+  '汽车': 'Automotive'
+  '工具': 'Tools'
+  '其他': 'Others'
+  '未分类': 'Others'
+  
+  # 英文类别标准化
+  'electronics': 'Electronics'
+  'clothing': 'Clothing'
+  'food': 'Food'
+  'beverages': 'Beverages'
+  'furniture': 'Furniture'
+  'home': 'Home'
+  'decoration': 'Decoration'
+  'books': 'Books'
+  'stationery': 'Stationery'
+  'toys': 'Toys'
+  'sports': 'Sports'
+  'health': 'Health'
+  'beauty': 'Beauty'
+  'automotive': 'Automotive'
+  'tools': 'Tools'
+  'others': 'Others'
+
+# 数据质量规则配置
+data_quality_rules:
+  # 必填字段
+  required_fields:
+    - OrderDetailID
+    - OrderID
+    - ProductID
+    - Quantity
+    - UnitPrice
+  
+  # 数值范围检查
+  numeric_ranges:
+    Quantity:
+      min: 0.01
+      max: 10000
+    UnitPrice:
+      min: 0.01
+      max: 1000000
+    Discount:
+      min: 0
+      max: 100
+  
+  # 字符串长度检查
+  string_lengths:
+    ProductName:
+      min: 1
+      max: 100
+    ProductSpecification:
+      max: 500
+    WarehouseName:
+      min: 1
+      max: 100
+
+# 业务规则配置
+business_rules:
+  # 高价值商品阈值
+  high_value_threshold: 10000
+  
+  # 批量订单阈值
+  bulk_quantity_threshold: 100
+  
+  # 折扣等级
+  discount_levels:
+    low: 5
+    medium: 15
+    high: 30
+  
+  # 价格等级
+  price_categories:
+    low: 100
+    medium: 500
+    high: 1000
+    premium: 5000

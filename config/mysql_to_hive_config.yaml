@@ -46,3 +46,25 @@ tables:
     partition_column: dt
     sync_mode: full
     enabled: true
+
+  - mysql_table: Factories
+    hive_table: ods.Factories
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    enabled: true
+
+  - mysql_table: Inventory
+    hive_table: ods.Inventory
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    enabled: true
+  
+  - mysql_table: InventoryTransactions
+    hive_table: ods.InventoryTransactions
+    incremental_column: CreatedDate
+    partition_column: dt
+    sync_mode: full
+    enabled: true
+  
