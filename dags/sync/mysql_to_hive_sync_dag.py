@@ -633,7 +633,7 @@ with DAG(
     dag_id="sync_mysql_to_hive_dag",
     default_args=DEFAULT_ARGS,
     schedule_interval="0 2 * * *",  # 每天凌晨 2 点执行
-    start_date=datetime(2023, 1, 1),
+    start_date=datetime(2025, 8, 10),  # 更新开始日期为今天
     catchup=False,
     max_active_runs=1,
     max_active_tasks=3,  # 限制并发任务数
