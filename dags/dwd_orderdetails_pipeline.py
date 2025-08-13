@@ -378,10 +378,7 @@ def transform_orderdetails_data(**context):
         
         # 读取数据
         try:
-            if os.path.isdir(extract_file):
-                df = pd.read_parquet(extract_file)
-            else:
-                df = pd.read_parquet(extract_file)
+            df = pd.read_parquet(extract_file)
         except Exception as e:
             logging.error(f"读取parquet文件失败: {e}")
             if temp_dir and os.path.exists(temp_dir):
@@ -1097,10 +1094,10 @@ with DAG(
         bash_command='''
         echo "=== 验证HDFS分区结构 ==="
         echo "检查DWD OrderDetails表目录:"
-        curl -s "http://namenode:9870/webhdfs/v1/user/hive/warehouse/dwd_db/orderdetails?op=LISTSTATUS" | python -m json.tool || echo "目录检查失败"
+        curl -s "http://namenode:9870/webhdfs/v1/user/hive/warehouse/dwd_db.db/dwd_orderdetails?op=LISTSTATUS" | python -m json.tool || echo "目录检查失败"
         
         echo "检查年份分区:"
-        curl -s "http://namenode:9870/webhdfs/v1/user/hive/warehouse/dwd_db/orderdetails?op=LISTSTATUS&recursive=true" | python -m json.tool || echo "递归检查失败"
+        curl -s "http://namenode:9870/webhdfs/v1/user/hive/warehouse/dwd_db.db/dwd_orderdetails?op=LISTSTATUS&recursive=true" | python -m json.tool || echo "递归检查失败"
         
         echo "HDFS验证完成"
         ''',
