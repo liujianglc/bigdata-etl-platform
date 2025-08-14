@@ -23,16 +23,6 @@ def analyze_daily_kpi_with_llm(**context):
     import logging
     from datetime import datetime, timedelta
     
-    # 导入agno相关模块
-    try:
-        from agno.agent import Agent
-        from agno.models.deepseek import DeepSeekChat
-        AGNO_AVAILABLE = True
-    except ImportError:
-        # 如果agno不可用，回退到原来的实现
-        import requests
-        AGNO_AVAILABLE = False
-    
     spark = None
     try:
         # 创建Spark会话
@@ -108,53 +98,35 @@ def analyze_daily_kpi_with_llm(**context):
         """
         
         try:
-            # 尝试使用agno框架
-            if AGNO_AVAILABLE:
-                deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-                
-                agent = Agent(
-                    model=DeepSeekChat(
-                        id="deepseek-chat",
-                        api_key=deepseek_api_key,
-                        base_url="https://api.deepseek.com/v1"
-                    ),
-                    instructions="你是一名专业的数据分析师，擅长电商订单数据分析。"
-                )
-                
-                analysis_result = agent.run(analysis_prompt)
-                logging.info("✅ 使用agno框架完成DeepSeek分析")
-                
+            logging.info("⚠️ agno框架不可用，回退到requests方式")
+            import requests
+            
+            deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
+            
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {deepseek_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "你是一名专业的数据分析师，擅长电商订单数据分析。"},
+                        {"role": "user", "content": analysis_prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2000
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                analysis_result = response.json()['choices'][0]['message']['content']
+                logging.info("✅ DeepSeek分析完成")
             else:
-                # 如果agno不可用，使用原来的requests方式
-                logging.info("⚠️ agno框架不可用，回退到requests方式")
-                import requests
-                
-                deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-                
-                response = requests.post(
-                    "https://api.deepseek.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "deepseek-chat",
-                        "messages": [
-                            {"role": "system", "content": "你是一名专业的数据分析师，擅长电商订单数据分析。"},
-                            {"role": "user", "content": analysis_prompt}
-                        ],
-                        "temperature": 0.3,
-                        "max_tokens": 2000
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    analysis_result = response.json()['choices'][0]['message']['content']
-                    logging.info("✅ DeepSeek分析完成")
-                else:
-                    logging.error(f"DeepSeek API调用失败: {response.status_code}")
-                    analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
+                logging.error(f"DeepSeek API调用失败: {response.status_code}")
+                analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
                 
         except Exception as e:
             logging.error(f"LLM分析失败: {e}")
@@ -186,16 +158,6 @@ def analyze_customer_segments_with_llm(**context):
     from pyspark.sql import SparkSession
     import json
     import logging
-    
-    # 导入agno相关模块
-    try:
-        from agno.agent import Agent
-        from agno.models.deepseek import DeepSeekChat
-        AGNO_AVAILABLE = True
-    except ImportError:
-        # 如果agno不可用，回退到原来的实现
-        import requests
-        AGNO_AVAILABLE = False
     
     spark = None
     try:
@@ -303,53 +265,36 @@ def analyze_customer_segments_with_llm(**context):
         """
         
         try:
-            # 尝试使用agno框架
-            if AGNO_AVAILABLE:
-                deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-                
-                agent = Agent(
-                    model=DeepSeekChat(
-                        id="deepseek-chat",
-                        api_key=deepseek_api_key,
-                        base_url="https://api.deepseek.com/v1"
-                    ),
-                    instructions="你是一名专业的客户关系管理专家，擅长客户分析和CRM策略制定。"
-                )
-                
-                analysis_result = agent.run(analysis_prompt)
-                logging.info("✅ 使用agno框架完成客户分段DeepSeek分析")
-                
+            
+            logging.info("⚠️ agno框架不可用，回退到requests方式")
+            import requests
+            
+            deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
+            
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {deepseek_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "你是一名专业的客户关系管理专家，擅长客户分析和CRM策略制定。"},
+                        {"role": "user", "content": analysis_prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2500
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                analysis_result = response.json()['choices'][0]['message']['content']
+                logging.info("✅ 客户分段DeepSeek分析完成")
             else:
-                # 如果agno不可用，使用原来的requests方式
-                logging.info("⚠️ agno框架不可用，回退到requests方式")
-                import requests
-                
-                deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-                
-                response = requests.post(
-                    "https://api.deepseek.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "deepseek-chat",
-                        "messages": [
-                            {"role": "system", "content": "你是一名专业的客户关系管理专家，擅长客户分析和CRM策略制定。"},
-                            {"role": "user", "content": analysis_prompt}
-                        ],
-                        "temperature": 0.3,
-                        "max_tokens": 2500
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    analysis_result = response.json()['choices'][0]['message']['content']
-                    logging.info("✅ 客户分段DeepSeek分析完成")
-                else:
-                    logging.error(f"DeepSeek API调用失败: {response.status_code}")
-                    analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
+                logging.error(f"DeepSeek API调用失败: {response.status_code}")
+                analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
                 
         except Exception as e:
             logging.error(f"客户分段LLM分析失败: {e}")
@@ -382,16 +327,6 @@ def analyze_monthly_trends_with_llm(**context):
     import json
     import logging
     from datetime import datetime, timedelta
-    
-    # 导入agno相关模块
-    try:
-        from agno.agent import Agent
-        from agno.models.deepseek import DeepSeekChat
-        AGNO_AVAILABLE = True
-    except ImportError:
-        # 如果agno不可用，回退到原来的实现
-        import requests
-        AGNO_AVAILABLE = False
     
     spark = None
     try:
@@ -516,53 +451,34 @@ def analyze_monthly_trends_with_llm(**context):
         """
         
         try:
-            # 尝试使用agno框架
-            if AGNO_AVAILABLE:
-                deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-                
-                agent = Agent(
-                    model=DeepSeekChat(
-                        id="deepseek-chat",
-                        api_key=deepseek_api_key,
-                        base_url="https://api.deepseek.com/v1"
-                    ),
-                    instructions="你是一名专业的业务分析专家，擅长趋势分析和战略规划。"
-                )
-                
-                analysis_result = agent.run(analysis_prompt)
-                logging.info("✅ 使用agno框架完成月度趋势DeepSeek分析")
-                
+            import requests
+            
+            deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
+            
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {deepseek_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "你是一名专业的业务分析专家，擅长趋势分析和战略规划。"},
+                        {"role": "user", "content": analysis_prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2500
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                analysis_result = response.json()['choices'][0]['message']['content']
+                logging.info("✅ 月度趋势DeepSeek分析完成")
             else:
-                # 如果agno不可用，使用原来的requests方式
-                logging.info("⚠️ agno框架不可用，回退到requests方式")
-                import requests
-                
-                deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-                
-                response = requests.post(
-                    "https://api.deepseek.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "deepseek-chat",
-                        "messages": [
-                            {"role": "system", "content": "你是一名专业的业务分析专家，擅长趋势分析和战略规划。"},
-                            {"role": "user", "content": analysis_prompt}
-                        ],
-                        "temperature": 0.3,
-                        "max_tokens": 2500
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    analysis_result = response.json()['choices'][0]['message']['content']
-                    logging.info("✅ 月度趋势DeepSeek分析完成")
-                else:
-                    logging.error(f"DeepSeek API调用失败: {response.status_code}")
-                    analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
+                logging.error(f"DeepSeek API调用失败: {response.status_code}")
+                analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
                 
         except Exception as e:
             logging.error(f"月度趋势LLM分析失败: {e}")

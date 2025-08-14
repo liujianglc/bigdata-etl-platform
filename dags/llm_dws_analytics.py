@@ -268,45 +268,6 @@ def call_llm_analysis(context: str, model: str = "gpt-4o-mini") -> str:
 
 请用中文回答，分析要具体、实用，并提供可执行的建议。
 '''
-
-        # 优先尝试使用Agno API
-        agno_api_key = os.getenv("AGNO_API_KEY")
-        if agno_api_key and agno_api_key != "your-api-key":
-            try:
-                logging.info("🤖 使用Agno API进行分析...")
-                headers = {
-                    "Authorization": f"Bearer {agno_api_key}",
-                    "Content-Type": "application/json"
-                }
-                
-                data = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "你是一个专业的数据分析师，擅长电商和订单数据分析。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "max_tokens": 4000,
-                    "temperature": 0.7
-                }
-                
-                response = requests.post(
-                    "https://api.agno.com/v1/chat/completions",
-                    headers=headers,
-                    json=data,
-                    timeout=60
-                )
-                
-                if response.status_code == 200:
-                    analysis = response.json()["choices"][0]["message"]["content"]
-                    logging.info("✅ Agno分析完成")
-                    return analysis
-                else:
-                    logging.warning(f"Agno API调用失败: {response.status_code}, 尝试DeepSeek")
-                    
-            except Exception as e:
-                logging.warning(f"Agno API调用异常: {e}, 尝试DeepSeek")
-        
-        # 备选：使用DeepSeek API
         deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
         if deepseek_api_key and deepseek_api_key != "your-api-key":
             try:
@@ -377,20 +338,16 @@ def check_llm_dependencies(**context):
     
     try:
         # 检查环境变量
-        agno_api_key = os.getenv("AGNO_API_KEY")
         deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
         
         llm_available = False
         
-        if agno_api_key and agno_api_key != "your-api-key":
-            logging.info("✅ AGNO_API_KEY 已配置")
-            llm_available = True
-        elif deepseek_api_key and deepseek_api_key != "your-api-key":
+        if deepseek_api_key and deepseek_api_key != "your-api-key":
             logging.info("✅ DEEPSEEK_API_KEY 已配置")
             llm_available = True
         else:
-            logging.warning("⚠️ 未设置 AGNO_API_KEY 或 DEEPSEEK_API_KEY 环境变量，将使用基础分析")
-            logging.info("设置方法: export AGNO_API_KEY='your-api-key' 或 export DEEPSEEK_API_KEY='your-api-key'")
+            logging.warning("⚠️ 未设置 DEEPSEEK_API_KEY 环境变量，将使用基础分析")
+            logging.info("设置方法: export DEEPSEEK_API_KEY='your-api-key'")
         
         context['task_instance'].xcom_push(key='llm_available', value=llm_available)
         
