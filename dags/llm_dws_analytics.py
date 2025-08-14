@@ -275,14 +275,48 @@ def call_llm_analysis(context: str, model: str = "gpt-4o-mini") -> str:
         
         llm_available = False
         
-        if deepseek_api_key:
-            logging.info("✅ DEEPSEEK_API_KEY 已配置")
-            llm_available = True
+        if deepseek_api_key and deepseek_api_key != "your-api-key":
+            try:
+                logging.info("🤖 使用DeepSeek API进行分析...")
+                headers = {
+                    "Authorization": f"Bearer {deepseek_api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                data = {
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": "你是一个专业的数据分析师，擅长电商和订单数据分析。"},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "max_tokens": 4000,
+                    "temperature": 0.7
+                }
+                
+                response = requests.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=60
+                )
+                
+                if response.status_code == 200:
+                    response_json = response.json()
+                    # 检查响应结构
+                    if "choices" in response_json and len(response_json["choices"]) > 0:
+                        analysis = response_json["choices"][0]["message"]["content"]
+                        logging.info("✅ DeepSeek分析完成")
+                        return analysis
+                    else:
+                        logging.error(f"DeepSeek API返回意外的响应结构: {response_json}")
+                        raise Exception("DeepSeek API返回意外的响应结构")
+                else:
+                    raise Exception(f"DeepSeek API调用失败: {response.status_code} - {response.text}")
+                    
+            except Exception as e:
+                logging.error(f"DeepSeek API调用失败: {e}")
         else:
-            logging.warning("⚠️ 未设置 DEEPSEEK_API_KEY 环境变量，将使用基础分析")
-            logging.info("设置方法: 在Airflow Variables中设置DEEPSEEK_API_KEY或export DEEPSEEK_API_KEY='your-api-key'")
-        
-        context['task_instance'].xcom_push(key='llm_available', value=llm_available)
+            logging.warning("⚠️ DeepSeek API密钥未配置或无效")
         
         # 如果所有API都不可用，返回基础分析
         logging.warning("⚠️ 所有LLM API都不可用，使用基础分析")
