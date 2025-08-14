@@ -474,7 +474,7 @@ with DAG(
     description='使用大模型分析DWS层每日KPI数据',
     params={
         'analysis_days': 7,  # 默认分析最近7天
-        'model': 'gpt-4o-mini'  # 默认使用的模型 (Agno支持)
+        'model': 'deepseek'  # 默认使用的模型 (Agno支持)
     }
 ) as dag:
 
