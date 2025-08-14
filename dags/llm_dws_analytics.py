@@ -162,6 +162,8 @@ def analyze_daily_kpi_with_llm(**context):
 
 def prepare_analysis_context(df: pd.DataFrame) -> str:
     """准备分析上下文数据"""
+    import json
+    
     if df.empty:
         return "没有可用的KPI数据进行分析。"
     
@@ -231,6 +233,7 @@ def call_llm_analysis(context: str, model: str = "gpt-4o-mini") -> str:
     import logging
     import os
     import requests
+    from airflow.models import Variable
     
     try:
         # 构建分析提示
@@ -268,41 +271,18 @@ def call_llm_analysis(context: str, model: str = "gpt-4o-mini") -> str:
 
 请用中文回答，分析要具体、实用，并提供可执行的建议。
 '''
-        deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-        if deepseek_api_key and deepseek_api_key != "your-api-key":
-            try:
-                logging.info("🤖 使用DeepSeek API进行分析...")
-                headers = {
-                    "Authorization": f"Bearer {deepseek_api_key}",
-                    "Content-Type": "application/json"
-                }
-                
-                data = {
-                    "model": "deepseek-chat",
-                    "messages": [
-                        {"role": "system", "content": "你是一个专业的数据分析师，擅长电商和订单数据分析。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "max_tokens": 4000,
-                    "temperature": 0.7
-                }
-                
-                response = requests.post(
-                    "https://api.deepseek.com/v1/chat/completions",
-                    headers=headers,
-                    json=data,
-                    timeout=60
-                )
-                
-                if response.status_code == 200:
-                    analysis = response.json()["choices"][0]["message"]["content"]
-                    logging.info("✅ DeepSeek分析完成")
-                    return analysis
-                else:
-                    raise Exception(f"DeepSeek API调用失败: {response.status_code} - {response.text}")
-                    
-            except Exception as e:
-                logging.error(f"DeepSeek API调用失败: {e}")
+        deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var=None)
+        
+        llm_available = False
+        
+        if deepseek_api_key:
+            logging.info("✅ DEEPSEEK_API_KEY 已配置")
+            llm_available = True
+        else:
+            logging.warning("⚠️ 未设置 DEEPSEEK_API_KEY 环境变量，将使用基础分析")
+            logging.info("设置方法: 在Airflow Variables中设置DEEPSEEK_API_KEY或export DEEPSEEK_API_KEY='your-api-key'")
+        
+        context['task_instance'].xcom_push(key='llm_available', value=llm_available)
         
         # 如果所有API都不可用，返回基础分析
         logging.warning("⚠️ 所有LLM API都不可用，使用基础分析")
@@ -335,10 +315,11 @@ def check_llm_dependencies(**context):
     """检查LLM分析依赖"""
     import logging
     import os
+    from airflow.models import Variable
     
     try:
         # 检查环境变量
-        deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+        deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var=os.getenv("DEEPSEEK_API_KEY"))
         
         llm_available = False
         
