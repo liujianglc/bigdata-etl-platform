@@ -307,14 +307,7 @@ def extract_orderdetails_data(**context):
             COALESCE(o.PaymentMethod, 'Unknown') as PaymentMethod,
             COALESCE(o.PaymentStatus, 'Unknown') as PaymentStatus,
             od.CreatedDate,
-            od.UpdatedDate,
-            -- 添加分区信息用于调试
-            '{batch_date}' as od_partition_date,
-            '{orders_partition}' as orders_partition_date,
-            '{customers_partition}' as customers_partition_date,
-            '{products_partition}' as products_partition_date,
-            '{warehouses_partition}' as warehouses_partition_date,
-            '{factories_partition}' as factories_partition_date
+            od.UpdatedDate
         FROM ods.OrderDetails od
         LEFT JOIN ods.Orders o ON od.OrderID = o.OrderID AND o.dt = '{orders_partition}'
         LEFT JOIN ods.Customers c ON o.CustomerID = c.CustomerID AND c.dt = '{customers_partition}'
@@ -720,6 +713,32 @@ def transform_orderdetails_data(**context):
         logging.error(f"OrderDetails数据转换失败: {e}")
         raise
 
+def load_dwd_pipeline_config():
+    """加载DWD Pipeline配置"""
+    import yaml
+    import os
+    
+    config_path = '/opt/airflow/config/dwd_pipeline_config.yaml'
+    
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
+    else:
+        # 返回默认配置
+        logging.warning("DWD Pipeline配置文件不存在，使用默认配置")
+        return {
+            'environment': 'development',
+            'table_management': {
+                'development': {
+                    'drop_table_before_create': True,
+                    'backup_before_drop': False
+                }
+            },
+            'performance': {
+                'coalesce_partitions': 2
+            }
+        }
+
 def load_orderdetails_to_hdfs(**context):
     """将转换后的OrderDetails数据加载到HDFS - 使用Spark方式"""
     from pyspark.sql import SparkSession
@@ -799,12 +818,37 @@ def load_orderdetails_to_hdfs(**context):
         table_location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orderdetails"
         logging.info(f"表将存储在 HDFS 位置: {table_location}")
         
+        # 加载DWD Pipeline配置
+        dwd_config = load_dwd_pipeline_config()
+        environment = dwd_config.get('environment', 'development')
+        table_mgmt = dwd_config.get('table_management', {}).get(environment, {})
+        
+        logging.info(f"当前环境: {environment}")
+        
         # 检查表是否已存在
         table_exists = False
         try:
             spark.sql("DESCRIBE dwd_orderdetails")
             table_exists = True
             logging.info("DWD OrderDetails表已存在")
+            
+            # 根据环境配置决定是否删除现有表
+            if table_mgmt.get('drop_table_before_create', False):
+                logging.info(f"{environment}环境：删除现有表以避免结构冲突")
+                
+                # 是否需要备份
+                if table_mgmt.get('backup_before_drop', False):
+                    backup_table_name = f"dwd_orderdetails_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    try:
+                        spark.sql(f"CREATE TABLE {backup_table_name} AS SELECT * FROM dwd_orderdetails")
+                        logging.info(f"已备份现有表到: {backup_table_name}")
+                    except Exception as e:
+                        logging.warning(f"备份表失败: {e}")
+                
+                spark.sql("DROP TABLE IF EXISTS dwd_orderdetails")
+                table_exists = False
+                logging.info("现有表已删除")
+            
         except Exception:
             table_exists = False
             logging.info("DWD OrderDetails表不存在，将创建新表")
@@ -820,8 +864,11 @@ def load_orderdetails_to_hdfs(**context):
         record_count = spark_df.count()
         logging.info(f"准备写入 {record_count} 条记录")
         
+        # 获取性能配置
+        coalesce_partitions = dwd_config.get('performance', {}).get('coalesce_partitions', 2)
+        
         if table_exists:
-            # 对于已存在的表，删除当天分区再写入
+            # 表存在，执行增量更新
             partition_spec = f"dt='{batch_date}'"
             try:
                 spark.sql(f"ALTER TABLE dwd_orderdetails DROP IF EXISTS PARTITION ({partition_spec})")
@@ -830,11 +877,11 @@ def load_orderdetails_to_hdfs(**context):
                 logging.warning(f"删除分区时出现警告: {e}")
             
             # 按分区写入
-            spark_df.coalesce(2).write.mode("append").partitionBy("dt").options(**write_options).saveAsTable("dwd_orderdetails")
+            spark_df.coalesce(coalesce_partitions).write.mode("append").partitionBy("dt").options(**write_options).saveAsTable("dwd_orderdetails")
             logging.info("✅ 增量数据写入完成")
         else:
             # 创建新表
-            spark_df.coalesce(2).write.mode("overwrite").partitionBy("dt").options(**write_options).saveAsTable("dwd_orderdetails")
+            spark_df.coalesce(coalesce_partitions).write.mode("overwrite").partitionBy("dt").options(**write_options).saveAsTable("dwd_orderdetails")
             logging.info("✅ 新表创建完成")
         
         # 清理缓存
