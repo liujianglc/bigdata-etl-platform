@@ -14,6 +14,114 @@ default_args = {
     'email_on_retry': False,
 }
 
+def load_partition_strategy_config():
+    """加载表分区策略配置"""
+    import yaml
+    import os
+    
+    config_path = '/opt/airflow/config/table_partition_strategy.yaml'
+    
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
+    else:
+        # 返回默认配置
+        logging.warning("分区策略配置文件不存在，使用默认配置")
+        return {
+            'tables': {
+                'ods.Orders': {'partition_strategy': 'daily'},
+                'ods.OrderDetails': {'partition_strategy': 'daily'},
+                'ods.Customers': {'partition_strategy': 'keep_history'},
+                'ods.Products': {'partition_strategy': 'keep_history'},
+                'ods.Warehouses': {'partition_strategy': 'latest_only'},
+                'ods.Factories': {'partition_strategy': 'latest_only'},
+                'ods.Inventory': {'partition_strategy': 'latest_only'}
+            },
+            'join_strategies': {
+                'daily': {'prefer_target_date': True, 'fallback_to_latest': True},
+                'keep_history': {'prefer_target_date': True, 'fallback_to_latest': True},
+                'latest_only': {'use_latest_always': True}
+            }
+        }
+
+def get_table_partition_strategy(spark, table_name, target_date, config=None):
+    """
+    根据配置获取表的最佳分区日期
+    
+    Args:
+        spark: Spark会话
+        table_name: 表名
+        target_date: 目标日期
+        config: 分区策略配置
+    
+    Returns:
+        最佳分区日期
+    """
+    if config is None:
+        config = load_partition_strategy_config()
+    
+    try:
+        # 获取表的分区策略
+        table_config = config['tables'].get(table_name, {})
+        partition_strategy = table_config.get('partition_strategy', 'daily')
+        
+        # 获取可用分区
+        partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
+        available_dates = [p[0].split('=')[1] for p in partitions]
+        
+        if not available_dates:
+            logging.warning(f"{table_name} 没有找到任何分区，使用目标日期: {target_date}")
+            return target_date
+        
+        # 按日期排序
+        available_dates.sort()
+        latest_date = max(available_dates)
+        
+        # 根据策略选择分区
+        join_strategy = config['join_strategies'].get(partition_strategy, {})
+        
+        if join_strategy.get('use_latest_always', False):
+            # latest_only策略：总是使用最新分区
+            logging.info(f"{table_name} (latest_only策略) 使用最新分区: dt={latest_date}")
+            return latest_date
+        
+        elif join_strategy.get('prefer_target_date', True):
+            # 优先使用目标日期分区
+            if target_date in available_dates:
+                logging.info(f"{table_name} ({partition_strategy}策略) 使用目标分区: dt={target_date}")
+                return target_date
+            elif join_strategy.get('fallback_to_latest', True):
+                logging.warning(f"{table_name} 目标分区 dt={target_date} 不存在，使用最新分区: dt={latest_date}")
+                
+                # 检查日期差异
+                from datetime import datetime
+                try:
+                    target_dt = datetime.strptime(target_date, '%Y-%m-%d')
+                    latest_dt = datetime.strptime(latest_date, '%Y-%m-%d')
+                    date_diff = abs((target_dt - latest_dt).days)
+                    
+                    if date_diff > config.get('quality_checks', {}).get('partition_date_diff_warning', 3):
+                        logging.warning(f"{table_name} 分区日期差异较大: {date_diff} 天")
+                    
+                    if date_diff > config.get('quality_checks', {}).get('partition_date_diff_error', 7):
+                        logging.error(f"{table_name} 分区日期差异过大: {date_diff} 天，可能影响数据质量")
+                        
+                except Exception as date_e:
+                    logging.warning(f"日期差异计算失败: {date_e}")
+                
+                return latest_date
+            else:
+                logging.warning(f"{table_name} 目标分区不存在且不允许回退，使用目标日期: {target_date}")
+                return target_date
+        else:
+            # 使用最新分区
+            logging.info(f"{table_name} 使用最新分区: dt={latest_date}")
+            return latest_date
+            
+    except Exception as e:
+        logging.error(f"检查 {table_name} 分区失败: {e}")
+        return target_date
+
 def extract_orderdetails_data(**context):
     """从Hive提取OrderDetails相关数据（基于mysql_to_hive_sync_dag的备份数据）"""
     from pyspark.sql import SparkSession
@@ -128,7 +236,51 @@ def extract_orderdetails_data(**context):
             logging.warning(f"无法获取分区信息: {e}")
             logging.info("继续使用原始批次日期")
         
-        # 从Hive读取OrderDetails数据，关联维度表
+        # 加载分区策略配置
+        partition_config = load_partition_strategy_config()
+        logging.info("✅ 分区策略配置加载成功")
+        
+        # 智能分区选择：根据配置和实际分区情况选择最佳分区
+        logging.info("开始智能分区选择...")
+        
+        dimension_tables = ['ods.Orders', 'ods.Customers', 'ods.Products', 'ods.Warehouses', 'ods.Factories']
+        table_partition_info = {}
+        
+        for table in dimension_tables:
+            partition_date = get_table_partition_strategy(spark, table, batch_date, partition_config)
+            table_partition_info[table] = partition_date
+        
+        # 获取各表的分区日期
+        orders_partition = table_partition_info.get('ods.Orders', batch_date)
+        customers_partition = table_partition_info.get('ods.Customers', batch_date)
+        products_partition = table_partition_info.get('ods.Products', batch_date)
+        warehouses_partition = table_partition_info.get('ods.Warehouses', batch_date)
+        factories_partition = table_partition_info.get('ods.Factories', batch_date)
+        
+        # 数据质量检查：检查分区日期一致性
+        partition_dates = list(table_partition_info.values())
+        unique_dates = set(partition_dates)
+        
+        if len(unique_dates) > 1:
+            logging.warning("⚠️ 检测到跨日期JOIN:")
+            for table, date in table_partition_info.items():
+                logging.warning(f"  {table}: dt={date}")
+            
+            # 检查是否允许跨日期JOIN
+            if not partition_config.get('quality_checks', {}).get('allow_cross_date_join', True):
+                raise Exception("配置不允许跨日期JOIN，请检查数据同步状态")
+        else:
+            logging.info(f"✅ 所有表使用相同分区日期: dt={list(unique_dates)[0]}")
+        
+        logging.info(f"JOIN分区策略:")
+        logging.info(f"  OrderDetails: dt={batch_date}")
+        logging.info(f"  Orders: dt={orders_partition}")
+        logging.info(f"  Customers: dt={customers_partition}")
+        logging.info(f"  Products: dt={products_partition}")
+        logging.info(f"  Warehouses: dt={warehouses_partition}")
+        logging.info(f"  Factories: dt={factories_partition}")
+        
+        # 从Hive读取OrderDetails数据，关联维度表（使用智能分区选择）
         orderdetails_query = f"""
         SELECT 
             od.OrderDetailID,
@@ -155,13 +307,20 @@ def extract_orderdetails_data(**context):
             COALESCE(o.PaymentMethod, 'Unknown') as PaymentMethod,
             COALESCE(o.PaymentStatus, 'Unknown') as PaymentStatus,
             od.CreatedDate,
-            od.UpdatedDate
+            od.UpdatedDate,
+            -- 添加分区信息用于调试
+            '{batch_date}' as od_partition_date,
+            '{orders_partition}' as orders_partition_date,
+            '{customers_partition}' as customers_partition_date,
+            '{products_partition}' as products_partition_date,
+            '{warehouses_partition}' as warehouses_partition_date,
+            '{factories_partition}' as factories_partition_date
         FROM ods.OrderDetails od
-        LEFT JOIN ods.Orders o ON od.OrderID = o.OrderID AND o.dt = '{batch_date}'
-        LEFT JOIN ods.Customers c ON o.CustomerID = c.CustomerID AND c.dt = '{batch_date}'
-        LEFT JOIN ods.Products p ON od.ProductID = p.ProductID AND p.dt = '{batch_date}'
-        LEFT JOIN ods.Warehouses w ON od.WarehouseID = w.WarehouseID AND w.dt = '{batch_date}'
-        LEFT JOIN ods.Factories f ON w.FactoryID = f.FactoryID AND f.dt = '{batch_date}'
+        LEFT JOIN ods.Orders o ON od.OrderID = o.OrderID AND o.dt = '{orders_partition}'
+        LEFT JOIN ods.Customers c ON o.CustomerID = c.CustomerID AND c.dt = '{customers_partition}'
+        LEFT JOIN ods.Products p ON od.ProductID = p.ProductID AND p.dt = '{products_partition}'
+        LEFT JOIN ods.Warehouses w ON od.WarehouseID = w.WarehouseID AND w.dt = '{warehouses_partition}'
+        LEFT JOIN ods.Factories f ON w.FactoryID = f.FactoryID AND f.dt = '{factories_partition}'
         WHERE od.dt = '{batch_date}'
         """
         
