@@ -5,22 +5,9 @@ mysql:
   driver: com.mysql.cj.jdbc.Driver
 
 tables:
+  # 增量同步表 - 事务性数据，需要保留历史
   - mysql_table: Orders
     hive_table: ods.Orders
-    incremental_column: UpdatedDate
-    partition_column: dt
-    sync_mode: incremental       # 可选值: full, incremental
-    enabled: true
-
-  - mysql_table: Customers
-    hive_table: ods.Customers
-    incremental_column: UpdatedDate
-    partition_column: dt
-    sync_mode: incremental
-    enabled: true
-
-  - mysql_table: Products
-    hive_table: ods.Products
     incremental_column: UpdatedDate
     partition_column: dt
     sync_mode: incremental
@@ -33,38 +20,69 @@ tables:
     sync_mode: incremental
     enabled: true
     
-  - mysql_table: Warehouses
-    hive_table: ods.Warehouses
-    incremental_column: UpdatedDate
+  - mysql_table: InventoryTransactions
+    hive_table: ods.InventoryTransactions
+    incremental_column: CreatedDate
     partition_column: dt
     sync_mode: incremental
     enabled: true
 
+  # 全量同步表 - 维度数据，根据业务需求选择策略
+  
+  # 客户数据 - 保留历史，用于客户行为分析
+  - mysql_table: Customers
+    hive_table: ods.Customers
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    full_backup_strategy: keep_history  # 保留历史分区
+    partition_retention_days: 90        # 保留90天的历史数据
+    enabled: true
+
+  # 产品数据 - 保留历史，用于产品变更追踪
+  - mysql_table: Products
+    hive_table: ods.Products
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    full_backup_strategy: keep_history  # 保留历史分区
+    partition_retention_days: 180       # 保留180天的历史数据
+    enabled: true
+
+  # 仓库数据 - 只保留最新，变更不频繁
+  - mysql_table: Warehouses
+    hive_table: ods.Warehouses
+    incremental_column: UpdatedDate
+    partition_column: dt
+    sync_mode: full
+    full_backup_strategy: latest_only   # 只保留最新数据
+    enabled: true
+
+  # 员工数据 - 保留历史，用于人事分析
   - mysql_table: Employees
     hive_table: ods.Employees
     incremental_column: UpdatedDate
     partition_column: dt
     sync_mode: full
+    full_backup_strategy: keep_history  # 保留历史分区
+    partition_retention_days: 365       # 保留1年的历史数据
     enabled: true
 
+  # 工厂数据 - 只保留最新，变更不频繁
   - mysql_table: Factories
     hive_table: ods.Factories
     incremental_column: UpdatedDate
     partition_column: dt
     sync_mode: full
+    full_backup_strategy: latest_only   # 只保留最新数据
     enabled: true
 
+  # 库存数据 - 只保留最新，实时性要求高
   - mysql_table: Inventory
     hive_table: ods.Inventory
     incremental_column: UpdatedDate
     partition_column: dt
     sync_mode: full
-    enabled: true
-  
-  - mysql_table: InventoryTransactions
-    hive_table: ods.InventoryTransactions
-    incremental_column: CreatedDate
-    partition_column: dt
-    sync_mode: full
+    full_backup_strategy: latest_only   # 只保留最新数据
     enabled: true
   

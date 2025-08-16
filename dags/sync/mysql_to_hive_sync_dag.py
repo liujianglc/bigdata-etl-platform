@@ -25,6 +25,26 @@ def load_config():
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
 
+def get_execution_date(**context):
+    """
+    获取执行日期的辅助函数
+    
+    选择你需要的策略：
+    """
+    from datetime import datetime
+    
+    # 策略1: 总是使用当前日期（如果这是你想要的）
+    return datetime.now().strftime('%Y-%m-%d')
+    
+    # 策略2: 使用 execution_date（Airflow 标准做法）
+    # return context['execution_date'].strftime('%Y-%m-%d')
+    
+    # 策略3: 智能选择（手动触发用当前日期，调度触发用 execution_date）
+    # if context.get('dag_run') and context['dag_run'].external_trigger:
+    #     return datetime.now().strftime('%Y-%m-%d')
+    # else:
+    #     return context['execution_date'].strftime('%Y-%m-%d')
+
 def check_environment():
     """检查环境是否准备就绪"""
     import socket
@@ -298,6 +318,42 @@ def create_spark():
                 logging.error(f"纯Spark配置详细错误: {traceback.format_exc()}")
                 raise Exception("无法创建任何Spark会话配置")
 
+def cleanup_old_partitions(spark, table_name, partition_column, retention_days=30):
+    """
+    清理旧分区，保留指定天数的数据
+    """
+    try:
+        from datetime import datetime, timedelta
+        
+        # 计算保留的最早日期
+        cutoff_date = (datetime.now() - timedelta(days=retention_days)).strftime('%Y-%m-%d')
+        
+        # 获取所有分区
+        partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
+        
+        deleted_count = 0
+        for partition in partitions:
+            partition_str = partition[0]  # 格式如 "dt=2025-08-01"
+            
+            if partition_column in partition_str:
+                # 提取日期
+                date_part = partition_str.split('=')[1]
+                if date_part < cutoff_date:
+                    try:
+                        spark.sql(f"ALTER TABLE {table_name} DROP PARTITION ({partition_str})")
+                        logging.info(f"删除旧分区: {table_name} {partition_str}")
+                        deleted_count += 1
+                    except Exception as e:
+                        logging.warning(f"删除分区失败 {table_name} {partition_str}: {e}")
+        
+        if deleted_count > 0:
+            logging.info(f"表 {table_name} 清理了 {deleted_count} 个旧分区")
+        else:
+            logging.info(f"表 {table_name} 没有需要清理的旧分区")
+            
+    except Exception as e:
+        logging.warning(f"清理旧分区时出错 {table_name}: {e}")
+
 def create_hive_databases():
     """预创建所有需要的Hive数据库"""
     spark = None
@@ -380,9 +436,23 @@ def create_hive_databases():
         except Exception as e:
             logging.warning(f"关闭Spark会话时出现警告: {e}")
 
-def sync_table(table_conf, exec_date):
+def sync_table(table_conf, **context):
+    """
+    同步单个表的函数
+    现在使用 context 来动态获取执行日期
+    """
     spark = None
     try:
+        # 动态获取执行日期
+        exec_date = get_execution_date(**context)
+        logging.info(f"动态计算的执行日期: {exec_date}")
+        
+        # 也可以记录其他相关日期用于调试
+        execution_date = context['execution_date'].strftime('%Y-%m-%d')
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        logging.info(f"Airflow execution_date: {execution_date}")
+        logging.info(f"当前实际日期: {current_date}")
+        logging.info(f"使用的分区日期: {exec_date}")
         spark = create_spark()
         config = load_config()
         mysql = config['mysql']
@@ -473,15 +543,19 @@ def sync_table(table_conf, exec_date):
         table_location = f"hdfs://namenode:9000/user/hive/warehouse/{hive_db}.db/{hive_table.split('.')[-1]}"
         logging.info(f"表将存储在 HDFS 位置: {table_location}")
 
-        # 写入Hive表 - 优化写入性能
+        # 写入Hive表 - 根据同步模式和表配置优化写入策略
         write_options = {
             "path": table_location,
             "compression": "snappy"  # 使用snappy压缩提高性能
         }
         
-        if table_exists and sync_mode == 'incremental':
-            # 增量写入已存在的表
-            logging.info("增量写入已存在的表...")
+        # 获取全量备份策略配置
+        full_backup_strategy = table_conf.get('full_backup_strategy', 'keep_history')  # 默认保留历史
+        # 可选值: 'keep_history' (保留历史分区), 'latest_only' (只保留最新)
+        
+        if sync_mode == 'incremental':
+            # 增量同步逻辑
+            logging.info("执行增量同步...")
             if part_col:
                 # 对于分区表，先删除当天分区再写入，避免重复数据
                 partition_spec = f"{part_col}='{exec_date}'"
@@ -491,14 +565,44 @@ def sync_table(table_conf, exec_date):
                 except Exception as e:
                     logging.warning(f"删除分区时出现警告: {e}")
                 
-                # 使用指定路径写入，添加重分区优化
+                # 增量写入新分区
                 df.coalesce(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
             else:
-                # 对于非分区表，使用saveAsTable append模式
+                # 对于非分区表，直接追加
                 df.coalesce(2).write.mode("append").options(**write_options).saveAsTable(hive_table)
+                
+        elif sync_mode == 'full':
+            # 全量同步逻辑
+            if full_backup_strategy == 'latest_only':
+                # 策略1: 只保留最新数据（覆盖整个表）
+                logging.info("全量同步 - 只保留最新数据（覆盖模式）...")
+                if part_col:
+                    # 即使有分区列，也覆盖整个表
+                    df.coalesce(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
+                else:
+                    df.coalesce(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
+                    
+            else:  # 'keep_history' 或其他值
+                # 策略2: 保留历史数据（按日期分区）
+                logging.info("全量同步 - 保留历史数据（分区模式）...")
+                if part_col:
+                    # 删除当天分区，然后写入新的全量数据到当天分区
+                    partition_spec = f"{part_col}='{exec_date}'"
+                    try:
+                        spark.sql(f"ALTER TABLE {hive_table} DROP IF EXISTS PARTITION ({partition_spec})")
+                        logging.info(f"删除当天分区: {partition_spec}")
+                    except Exception as e:
+                        logging.warning(f"删除分区时出现警告: {e}")
+                    
+                    # 写入到当天分区
+                    df.coalesce(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
+                else:
+                    # 如果没有分区列但要保留历史，建议添加分区列
+                    logging.warning(f"表 {hive_table} 配置为保留历史但没有分区列，建议添加分区列")
+                    df.coalesce(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
         else:
-            # 全量写入或创建新表
-            logging.info("创建新表或全量覆盖...")
+            # 创建新表的情况
+            logging.info("创建新表...")
             if part_col:
                 df.coalesce(2).write.mode("overwrite").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
             else:
@@ -602,6 +706,16 @@ def sync_table(table_conf, exec_date):
                         break
             except Exception as desc_e:
                 logging.warning(f"也无法获取表位置信息: {desc_e}")
+        
+        # 分区清理逻辑（仅对保留历史的全量同步表）
+        if (sync_mode == 'full' and 
+            full_backup_strategy == 'keep_history' and 
+            part_col and 
+            table_conf.get('partition_retention_days')):
+            
+            retention_days = table_conf.get('partition_retention_days', 30)
+            logging.info(f"开始清理表 {hive_table} 超过 {retention_days} 天的旧分区...")
+            cleanup_old_partitions(spark, hive_table, part_col, retention_days)
                 
     except Exception as e:
         logging.error(f"❌ 同步失败: {e}")
@@ -618,8 +732,12 @@ def sync_table(table_conf, exec_date):
                 logging.warning(f"关闭Spark会话时出现警告: {e}")
 
 def generate_tasks(dag, config):
+    """
+    生成同步任务
+    现在使用动态日期计算，不再需要在这里硬编码日期
+    """
     tasks = []
-    exec_date = "{{ ds }}"  # execution_date 格式为 YYYY-MM-DD
+    
     for table_conf in config['tables']:
         if not table_conf.get('enabled', True):
             continue
@@ -627,7 +745,8 @@ def generate_tasks(dag, config):
         task = PythonOperator(
             task_id=f"sync_{table_conf['mysql_table']}",
             python_callable=sync_table,
-            op_kwargs={'table_conf': table_conf, 'exec_date': exec_date},
+            op_kwargs={'table_conf': table_conf},
+            provide_context=True,  # 提供 Airflow context
             dag=dag,
         )
         tasks.append(task)
