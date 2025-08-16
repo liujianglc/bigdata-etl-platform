@@ -1,0 +1,80 @@
+# 表分区策略配置
+# 用于DWD层ETL流程正确处理不同备份策略的表
+
+tables:
+  # 增量同步表 - 每天都有新分区
+  ods.Orders:
+    sync_mode: incremental
+    partition_strategy: daily
+    description: "订单表，增量同步，每天都有新分区"
+    
+  ods.OrderDetails:
+    sync_mode: incremental
+    partition_strategy: daily
+    description: "订单明细表，增量同步，每天都有新分区"
+    
+  ods.InventoryTransactions:
+    sync_mode: incremental
+    partition_strategy: daily
+    description: "库存交易表，增量同步，每天都有新分区"
+
+  # 全量同步表 - 保留历史分区
+  ods.Customers:
+    sync_mode: full
+    partition_strategy: keep_history
+    description: "客户表，全量同步，保留历史分区"
+    
+  ods.Products:
+    sync_mode: full
+    partition_strategy: keep_history
+    description: "产品表，全量同步，保留历史分区"
+    
+  ods.Employees:
+    sync_mode: full
+    partition_strategy: keep_history
+    description: "员工表，全量同步，保留历史分区"
+
+  # 全量同步表 - 只保留最新数据
+  ods.Warehouses:
+    sync_mode: full
+    partition_strategy: latest_only
+    description: "仓库表，全量同步，只保留最新数据"
+    
+  ods.Factories:
+    sync_mode: full
+    partition_strategy: latest_only
+    description: "工厂表，全量同步，只保留最新数据"
+    
+  ods.Inventory:
+    sync_mode: full
+    partition_strategy: latest_only
+    description: "库存表，全量同步，只保留最新数据"
+
+# JOIN策略配置
+join_strategies:
+  # 对于daily策略的表，优先使用目标日期分区
+  daily:
+    prefer_target_date: true
+    fallback_to_latest: true
+    
+  # 对于keep_history策略的表，优先使用目标日期分区
+  keep_history:
+    prefer_target_date: true
+    fallback_to_latest: true
+    
+  # 对于latest_only策略的表，总是使用最新分区
+  latest_only:
+    prefer_target_date: false
+    fallback_to_latest: true
+    use_latest_always: true
+
+# 数据质量检查配置
+quality_checks:
+  # 分区日期差异警告阈值（天）
+  partition_date_diff_warning: 3
+  
+  # 分区日期差异错误阈值（天）
+  partition_date_diff_error: 7
+  
+  # 是否允许跨日期JOIN
+  allow_cross_date_join: true
