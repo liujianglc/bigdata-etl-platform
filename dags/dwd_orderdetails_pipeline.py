@@ -3,6 +3,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.dummy import DummyOperator
 from airflow.operators.bash import BashOperator
+import logging
 
 default_args = {
     'owner': 'data_team',
@@ -126,7 +127,6 @@ def extract_orderdetails_data(**context):
     """从Hive提取OrderDetails相关数据（基于mysql_to_hive_sync_dag的备份数据）"""
     from pyspark.sql import SparkSession
     from pyspark.sql.functions import col, when, datediff, year, month, dayofmonth, dayofweek, quarter, coalesce, lit, min, max
-    import logging
     import os
     import tempfile
     from datetime import datetime, timedelta
@@ -471,7 +471,6 @@ def transform_orderdetails_data(**context):
     """转换OrderDetails数据，应用业务规则和数据清洗"""
     import pandas as pd
     import numpy as np
-    import logging
     import yaml
     import os
     from datetime import datetime
@@ -726,7 +725,6 @@ def load_orderdetails_to_hdfs(**context):
     from pyspark.sql import SparkSession
     from pyspark.sql.functions import lit
     import pandas as pd
-    import logging
     import os
     import tempfile
     from datetime import datetime
@@ -902,7 +900,6 @@ def load_orderdetails_to_hdfs(**context):
 def create_orderdetails_hive_views(**context):
     """创建OrderDetails DWD层Hive视图"""
     from pyspark.sql import SparkSession
-    import logging
     
     spark = None
     try:
@@ -1034,7 +1031,6 @@ def create_orderdetails_hive_views(**context):
 
 def validate_orderdetails_dwd(**context):
     """验证OrderDetails DWD层数据质量"""
-    import logging
     
     try:
         # 获取相关信息
@@ -1146,7 +1142,6 @@ with DAG(
     def check_upstream_dependencies(**context):
         """检查上游依赖是否就绪"""
         from pyspark.sql import SparkSession
-        import logging
         
         spark = None
         try:
