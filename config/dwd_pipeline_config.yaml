@@ -1,0 +1,41 @@
+# DWD Pipeline 配置
+
+# 环境设置
+environment: development  # development, production
+
+# 表管理策略
+table_management:
+  # 开发环境：每次重建表以避免结构冲突
+  development:
+    recreate_table_on_schema_change: true
+    drop_table_before_create: true
+    backup_before_drop: false
+    
+  # 生产环境：保守的增量更新策略
+  production:
+    recreate_table_on_schema_change: true
+    drop_table_before_create: false
+    backup_before_drop: true
+    schema_evolution_strategy: "add_columns"  # add_columns, recreate, fail
+
+# 数据质量配置
+data_quality:
+  # 数据验证阈值
+  min_record_count: 0
+  max_null_percentage: 50
+  
+  # 分区管理
+  partition_retention_days: 30
+  cleanup_old_partitions: true
+
+# 性能配置
+performance:
+  spark_partitions: 2
+  coalesce_partitions: 2
+  enable_caching: true
+  
+# 调试配置
+debug:
+  add_partition_info_columns: false  # 是否添加分区信息调试字段
+  log_query_details: true
+  sample_data_on_error: true

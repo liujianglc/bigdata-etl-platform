@@ -293,6 +293,11 @@ services:
       # 时区配置
       AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Asia/Shanghai'
       TZ: 'Asia/Shanghai'
+      # 修复日志签名验证问题
+      AIRFLOW__LOGGING__REMOTE_LOGGING: 'false'
+      AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: ''
+      AIRFLOW__WEBSERVER__SECRET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
       # SQLAlchemy 连接池配置 - 修复事务问题
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
       AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
@@ -344,6 +349,10 @@ services:
       # 时区配置
       AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Asia/Shanghai'
       TZ: 'Asia/Shanghai'
+      # 修复日志签名验证问题
+      AIRFLOW__LOGGING__REMOTE_LOGGING: 'false'
+      AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: ''
+      AIRFLOW__WEBSERVER__SECRET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
       # SQLAlchemy 连接池配置 - 修复事务问题
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
       AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'
@@ -397,6 +406,10 @@ services:
       # 时区配置
       AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Asia/Shanghai'
       TZ: 'Asia/Shanghai'
+      # 修复日志签名验证问题
+      AIRFLOW__LOGGING__REMOTE_LOGGING: 'false'
+      AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: ''
+      AIRFLOW__WEBSERVER__SECRET_KEY: '${AIRFLOW__CORE__FERNET_KEY}'
       # SQLAlchemy 连接池配置 - 修复事务问题
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '10'
       AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '20'

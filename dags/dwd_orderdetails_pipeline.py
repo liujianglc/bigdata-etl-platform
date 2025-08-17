@@ -34,6 +34,7 @@ def load_partition_strategy_config():
                 'ods.OrderDetails': {'partition_strategy': 'daily'},
                 'ods.Customers': {'partition_strategy': 'keep_history'},
                 'ods.Products': {'partition_strategy': 'keep_history'},
+                'ods.Employees': {'partition_strategy': 'keep_history'},
                 'ods.Warehouses': {'partition_strategy': 'latest_only'},
                 'ods.Factories': {'partition_strategy': 'latest_only'},
                 'ods.Inventory': {'partition_strategy': 'latest_only'}
@@ -133,7 +134,7 @@ def extract_orderdetails_data(**context):
     
     spark = None
     try:
-        # 使用与mysql_to_hive_sync_dag相同的Spark配置模式
+        # 使用与mysql_to_hive_sync_dag相同的Spark配置模式，增加连接稳定性配置
         spark = SparkSession.builder \
             .appName("DWD OrderDetails Extract from Hive") \
             .master("local[1]") \
@@ -146,9 +147,10 @@ def extract_orderdetails_data(**context):
             .config("spark.executor.memory", "1g") \
             .config("spark.executor.cores", "1") \
             .config("spark.driver.cores", "1") \
-            .config("spark.network.timeout", "300s") \
-            .config("spark.rpc.askTimeout", "300s") \
-            .config("spark.rpc.lookupTimeout", "300s") \
+            .config("spark.network.timeout", "800s") \
+            .config("spark.rpc.askTimeout", "600s") \
+            .config("spark.rpc.lookupTimeout", "120s") \
+            .config("spark.executor.heartbeatInterval", "60s") \
             .config("spark.sql.adaptive.enabled", "false") \
             .config("spark.sql.execution.arrow.pyspark.enabled", "false") \
             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
@@ -162,6 +164,10 @@ def extract_orderdetails_data(**context):
             .config("spark.sql.execution.arrow.maxRecordsPerBatch", "1000") \
             .config("spark.sql.shuffle.partitions", "4") \
             .config("spark.default.parallelism", "2") \
+            .config("spark.hadoop.hive.metastore.client.connect.retry.delay", "5") \
+            .config("spark.hadoop.hive.metastore.client.socket.timeout", "1800") \
+            .config("spark.hadoop.hive.metastore.failure.retries", "3") \
+            .config("spark.hadoop.hive.metastore.client.capability.check", "false") \
             .enableHiveSupport() \
             .getOrCreate()
         
@@ -206,6 +212,7 @@ def extract_orderdetails_data(**context):
         if missing_tables:
             logging.error(f"缺少以下表: {missing_tables}")
             logging.error("请先运行 mysql_to_hive_sync_dag 同步基础数据表")
+            logging.error("或者运行测试脚本: python /opt/airflow/dags/test_mysql_hive_sync.py")
             raise Exception(f"缺少依赖表: {missing_tables}")
         
         # 计算增量数据的时间范围（最近30天的数据）
@@ -527,11 +534,15 @@ def transform_orderdetails_data(**context):
             
             return transform_file
         
-        # 读取数据
+        # 读取数据 - 如果是目录则读取整个目录，如果是文件则直接读取
         try:
-            df = pd.read_parquet(extract_file)
+            if os.path.isdir(extract_file):
+                df = pd.read_parquet(extract_file)
+            else:
+                df = pd.read_parquet(extract_file)
         except Exception as e:
             logging.error(f"读取parquet文件失败: {e}")
+            # 尝试从临时目录读取
             if temp_dir and os.path.exists(temp_dir):
                 df = pd.read_parquet(temp_dir)
             else:

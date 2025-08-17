@@ -74,13 +74,52 @@ set_permissions() {
 cleanup_old_resources() {
     log_step "清理旧的容器和网络..."
     
-    # 停止并删除旧容器
+    # 停止并删除旧容器和数据卷
     docker compose down -v --remove-orphans 2>/dev/null || true
     
     # 删除悬空的镜像
     docker image prune -f 2>/dev/null || true
     
     log_info "清理完成"
+}
+
+# 重置所有数据 (包括 HDFS 和 Hive)
+reset_all_data() {
+    log_step "重置所有数据 (HDFS, Hive, PostgreSQL)..."
+    
+    # 停止所有服务
+    docker compose down -v --remove-orphans 2>/dev/null || true
+    
+    # 删除所有相关的数据卷
+    log_info "删除数据卷..."
+    docker volume ls -q | grep -E "(hdfs|hive|postgres|mysql|namenode|datanode)" | xargs -r docker volume rm 2>/dev/null || true
+    
+    # 删除本地数据目录 (如果存在)
+    local data_dirs=(
+        "hadoop-data"
+        "hive-warehouse" 
+        "postgres-data"
+        "mysql-data"
+        "logs/hadoop"
+        "logs/hive"
+        "logs/spark"
+    )
+    
+    for dir in "${data_dirs[@]}"; do
+        if [[ -d "$dir" ]]; then
+            log_info "删除本地数据目录: $dir"
+            rm -rf "$dir"
+        fi
+    done
+    
+    # 清理日志文件
+    if [[ -d "logs" ]]; then
+        log_info "清理日志文件..."
+        find logs -name "*.log" -type f -delete 2>/dev/null || true
+        find logs -name "*.out" -type f -delete 2>/dev/null || true
+    fi
+    
+    log_info "数据重置完成 - 所有 HDFS 和 Hive 数据已清除"
 }
 
 # 构建镜像
@@ -263,7 +302,42 @@ show_access_info() {
 
 # 主函数
 main() {
+    # 解析命令行参数
+    local reset_data=false
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --reset-data)
+                reset_data=true
+                shift
+                ;;
+            -h|--help)
+                echo "用法: $0 [选项]"
+                echo "选项:"
+                echo "  --reset-data    重置所有数据 (HDFS, Hive, PostgreSQL)"
+                echo "  -h, --help      显示帮助信息"
+                exit 0
+                ;;
+            *)
+                log_error "未知参数: $1"
+                echo "使用 -h 或 --help 查看帮助"
+                exit 1
+                ;;
+        esac
+    done
+    
     log_info "开始启动优化的大数据ETL平台..."
+    if [[ "$reset_data" == true ]]; then
+        log_warn "⚠️  将重置所有数据！"
+        echo -n "确认要删除所有 HDFS 和 Hive 数据吗? (y/N): "
+        read -r confirmation
+        if [[ "$confirmation" =~ ^[Yy]$ ]]; then
+            log_info "确认重置数据..."
+        else
+            log_info "取消重置，正常启动..."
+            reset_data=false
+        fi
+    fi
     echo
     
     # 检查Docker和Docker Compose
@@ -280,8 +354,14 @@ main() {
     # 执行启动步骤
     check_requirements
     set_permissions
-    cleanup_old_resources
-    build_images
+    
+    if [[ "$reset_data" == true ]]; then
+        reset_all_data
+    else
+        cleanup_old_resources
+    fi
+    
+    # build_images
     start_base_services
     start_bigdata_services
     initialize_data

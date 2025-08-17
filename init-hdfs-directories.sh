@@ -24,39 +24,57 @@ if ! hdfs dfsadmin -report > /dev/null 2>&1; then
     exit 1
 fi
 
+# 检查是否已经初始化过
+if hdfs dfs -test -e /user/bigdata/wudeli/.hdfs_initialized 2>/dev/null; then
+    echo "HDFS目录已经初始化过，跳过初始化步骤"
+    echo "如需重新初始化，请先删除标记文件: hdfs dfs -rm /user/bigdata/wudeli/.hdfs_initialized"
+    exit 0
+fi
+
+# 安全创建目录的函数
+create_dir_safe() {
+    local dir_path=$1
+    if ! hdfs dfs -test -d "$dir_path" 2>/dev/null; then
+        echo "创建目录: $dir_path"
+        hdfs dfs -mkdir -p "$dir_path"
+    else
+        echo "目录已存在: $dir_path"
+    fi
+}
+
 # 创建基础目录结构
 echo "创建基础目录结构..."
 
 # 创建用户目录
-hdfs dfs -mkdir -p /user
-hdfs dfs -mkdir -p /user/bigdata
-hdfs dfs -mkdir -p /user/bigdata/wudeli
+create_dir_safe "/user"
+create_dir_safe "/user/bigdata"
+create_dir_safe "/user/bigdata/wudeli"
 
 # 创建ETL流程目录
 echo "创建ETL流程目录..."
-hdfs dfs -mkdir -p /user/bigdata/wudeli/raw
-hdfs dfs -mkdir -p /user/bigdata/wudeli/processed
-hdfs dfs -mkdir -p /user/bigdata/wudeli/reports
-hdfs dfs -mkdir -p /user/bigdata/wudeli/temp
-hdfs dfs -mkdir -p /user/bigdata/wudeli/archive
+create_dir_safe "/user/bigdata/wudeli/raw"
+create_dir_safe "/user/bigdata/wudeli/processed"
+create_dir_safe "/user/bigdata/wudeli/reports"
+create_dir_safe "/user/bigdata/wudeli/temp"
+create_dir_safe "/user/bigdata/wudeli/archive"
 
 # 创建分区目录结构
 echo "创建分区目录结构..."
-hdfs dfs -mkdir -p /user/bigdata/wudeli/raw/orders
-hdfs dfs -mkdir -p /user/bigdata/wudeli/processed/orders
-hdfs dfs -mkdir -p /user/bigdata/wudeli/processed/analytics
+create_dir_safe "/user/bigdata/wudeli/raw/orders"
+create_dir_safe "/user/bigdata/wudeli/processed/orders"
+create_dir_safe "/user/bigdata/wudeli/processed/analytics"
 
 # 创建Hive仓库目录
 echo "创建Hive仓库目录..."
-hdfs dfs -mkdir -p /user/hive
-hdfs dfs -mkdir -p /user/hive/warehouse
-hdfs dfs -mkdir -p /user/hive/warehouse/wudeli_analytics.db
+create_dir_safe "/user/hive"
+create_dir_safe "/user/hive/warehouse"
+create_dir_safe "/user/hive/warehouse/wudeli_analytics.db"
 
 # 创建日志目录
 echo "创建日志目录..."
-hdfs dfs -mkdir -p /user/bigdata/logs
-hdfs dfs -mkdir -p /user/bigdata/logs/etl
-hdfs dfs -mkdir -p /user/bigdata/logs/spark
+create_dir_safe "/user/bigdata/logs"
+create_dir_safe "/user/bigdata/logs/etl"
+create_dir_safe "/user/bigdata/logs/spark"
 
 # 设置目录权限
 echo "设置目录权限..."
@@ -66,7 +84,13 @@ hdfs dfs -chmod -R 755 /user/bigdata/logs
 
 # 创建测试文件验证写入权限
 echo "验证HDFS写入权限..."
-echo "HDFS初始化完成 - $(date)" | hdfs dfs -put - /user/bigdata/wudeli/temp/init_test.txt
+test_file="/user/bigdata/wudeli/temp/init_test.txt"
+if hdfs dfs -test -e "$test_file" 2>/dev/null; then
+    echo "删除已存在的测试文件: $test_file"
+    hdfs dfs -rm "$test_file"
+fi
+echo "HDFS初始化完成 - $(date)" | hdfs dfs -put - "$test_file"
+echo "✓ HDFS写入权限验证成功"
 
 # 显示目录结构
 echo "HDFS目录结构创建完成:"

@@ -29,21 +29,13 @@ def get_execution_date(**context):
     """
     获取执行日期的辅助函数
     
-    选择你需要的策略：
+    使用 execution_date 是 Airflow 的最佳实践：
+    - 保证数据分区与逻辑日期一致
+    - 支持历史数据回填
+    - 便于数据治理和监控
     """
-    from datetime import datetime
-    
-    # 策略1: 总是使用当前日期（如果这是你想要的）
-    return datetime.now().strftime('%Y-%m-%d')
-    
-    # 策略2: 使用 execution_date（Airflow 标准做法）
-    # return context['execution_date'].strftime('%Y-%m-%d')
-    
-    # 策略3: 智能选择（手动触发用当前日期，调度触发用 execution_date）
-    # if context.get('dag_run') and context['dag_run'].external_trigger:
-    #     return datetime.now().strftime('%Y-%m-%d')
-    # else:
-    #     return context['execution_date'].strftime('%Y-%m-%d')
+    # 使用 execution_date（Airflow 标准做法和最佳实践）
+    return context['execution_date'].strftime('%Y-%m-%d')
 
 def check_environment():
     """检查环境是否准备就绪"""
@@ -52,6 +44,7 @@ def check_environment():
     
     services_to_check = [
         ("namenode", 9000, "HDFS Namenode"),
+        ("datanode", 9864, "HDFS Datanode"),  # 添加datanode检查
         ("hive-metastore", 9083, "Hive Metastore"),
         ("spark-master", 7077, "Spark Master")
     ]
@@ -83,6 +76,45 @@ def check_environment():
                 else:
                     logging.error(f"❌ 检查 {service_name} 时出错: {e}")
                     raise
+
+def check_hdfs_health():
+    """检查HDFS集群健康状态"""
+    try:
+        import subprocess
+        import json
+        
+        # 检查HDFS状态
+        result = subprocess.run([
+            'hdfs', 'dfsadmin', '-report'
+        ], capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            output = result.stdout
+            logging.info("HDFS集群状态报告:")
+            
+            # 解析关键信息
+            lines = output.split('\n')
+            for line in lines:
+                if 'Live datanodes' in line or 'Dead datanodes' in line or 'DFS Used%' in line:
+                    logging.info(f"  {line.strip()}")
+            
+            # 检查是否有死节点
+            if 'Dead datanodes (0)' not in output:
+                logging.warning("⚠️ 检测到死的datanode，这可能导致数据读取问题")
+                return False
+            else:
+                logging.info("✅ 所有datanode都正常运行")
+                return True
+        else:
+            logging.error(f"HDFS状态检查失败: {result.stderr}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        logging.error("HDFS状态检查超时")
+        return False
+    except Exception as e:
+        logging.warning(f"无法执行HDFS状态检查: {e}")
+        return False
 
 def create_spark():
     import os
@@ -365,6 +397,15 @@ def create_hive_databases():
         logging.info("检查环境连接状态...")
         check_environment()
         logging.info("✅ 环境检查通过")
+        
+        # 检查HDFS健康状态
+        logging.info("检查HDFS集群健康状态...")
+        hdfs_healthy = check_hdfs_health()
+        if not hdfs_healthy:
+            logging.warning("⚠️ HDFS集群可能存在问题，但继续执行")
+        else:
+            logging.info("✅ HDFS集群健康检查通过")
+            
     except Exception as e:
         logging.error(f"❌ 环境检查失败: {e}")
         raise
@@ -546,7 +587,9 @@ def sync_table(table_conf, **context):
         # 写入Hive表 - 根据同步模式和表配置优化写入策略
         write_options = {
             "path": table_location,
-            "compression": "snappy"  # 使用snappy压缩提高性能
+            "compression": "snappy",  # 使用snappy压缩提高性能
+            "maxRecordsPerFile": "50000",  # 限制每个文件的记录数，避免大文件
+            "parquet.block.size": "134217728"  # 128MB块大小，适合HDFS
         }
         
         # 获取全量备份策略配置
@@ -565,11 +608,11 @@ def sync_table(table_conf, **context):
                 except Exception as e:
                     logging.warning(f"删除分区时出现警告: {e}")
                 
-                # 增量写入新分区
-                df.coalesce(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
+                # 增量写入新分区 - 使用更安全的写入策略
+                df.repartition(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
             else:
                 # 对于非分区表，直接追加
-                df.coalesce(2).write.mode("append").options(**write_options).saveAsTable(hive_table)
+                df.repartition(2).write.mode("append").options(**write_options).saveAsTable(hive_table)
                 
         elif sync_mode == 'full':
             # 全量同步逻辑
@@ -578,9 +621,9 @@ def sync_table(table_conf, **context):
                 logging.info("全量同步 - 只保留最新数据（覆盖模式）...")
                 if part_col:
                     # 即使有分区列，也覆盖整个表
-                    df.coalesce(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
+                    df.repartition(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
                 else:
-                    df.coalesce(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
+                    df.repartition(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
                     
             else:  # 'keep_history' 或其他值
                 # 策略2: 保留历史数据（按日期分区）
@@ -595,18 +638,18 @@ def sync_table(table_conf, **context):
                         logging.warning(f"删除分区时出现警告: {e}")
                     
                     # 写入到当天分区
-                    df.coalesce(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
+                    df.repartition(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
                 else:
                     # 如果没有分区列但要保留历史，建议添加分区列
                     logging.warning(f"表 {hive_table} 配置为保留历史但没有分区列，建议添加分区列")
-                    df.coalesce(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
+                    df.repartition(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
         else:
             # 创建新表的情况
             logging.info("创建新表...")
             if part_col:
-                df.coalesce(2).write.mode("overwrite").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
+                df.repartition(2).write.mode("overwrite").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
             else:
-                df.coalesce(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
+                df.repartition(2).write.mode("overwrite").options(**write_options).saveAsTable(hive_table)
         
         # 清理缓存
         df.unpersist()
@@ -615,10 +658,19 @@ def sync_table(table_conf, **context):
         spark.sql(f"REFRESH TABLE {hive_table}")
         logging.info(f"已刷新表元数据: {hive_table}")
         
-        # 验证写入结果
+        # 验证写入结果 - 改进错误处理
+        verification_success = False
         try:
+            # 等待一段时间让HDFS完成文件写入
+            import time
+            time.sleep(5)
+            
+            # 刷新表统计信息
+            spark.sql(f"ANALYZE TABLE {hive_table} COMPUTE STATISTICS")
+            
             final_count = spark.sql(f"SELECT COUNT(*) FROM {hive_table}").collect()[0][0]
             logging.info(f"✅ 写入成功！表 {hive_table} 中共有 {final_count} 条记录")
+            verification_success = True
             
             # 如果是分区表，显示分区信息
             if part_col:
@@ -630,20 +682,68 @@ def sync_table(table_conf, **context):
                     
         except Exception as count_e:
             logging.error(f"❌ 无法验证写入结果: {count_e}")
+            
+            # 检查是否是HDFS块丢失问题
+            if "BlockMissingException" in str(count_e) or "Could not obtain block" in str(count_e):
+                logging.error("检测到HDFS块丢失问题，可能是datanode故障")
+                
+                # 检查HDFS健康状态
+                hdfs_healthy = check_hdfs_health()
+                if not hdfs_healthy:
+                    logging.error("HDFS集群不健康，建议检查datanode状态")
+                
+                # 尝试修复HDFS
+                try:
+                    logging.info("尝试运行HDFS fsck修复...")
+                    import subprocess
+                    fsck_result = subprocess.run([
+                        'hdfs', 'fsck', table_location, '-delete-corrupted'
+                    ], capture_output=True, text=True, timeout=60)
+                    
+                    if fsck_result.returncode == 0:
+                        logging.info("HDFS fsck执行完成")
+                    else:
+                        logging.warning(f"HDFS fsck警告: {fsck_result.stderr}")
+                        
+                except Exception as fsck_e:
+                    logging.warning(f"无法执行HDFS fsck: {fsck_e}")
+            
             # 尝试简单的表存在性检查
             try:
                 spark.sql(f"DESCRIBE {hive_table}")
                 logging.info("✅ 表结构验证通过 - 表已创建")
+                
+                # 尝试使用不同的验证方法
+                try:
+                    # 使用HDFS命令直接检查文件
+                    import subprocess
+                    hdfs_result = subprocess.run([
+                        'hdfs', 'dfs', '-ls', table_location
+                    ], capture_output=True, text=True, timeout=30)
+                    
+                    if hdfs_result.returncode == 0:
+                        logging.info("✅ HDFS文件验证通过")
+                        logging.info(f"HDFS文件列表:\n{hdfs_result.stdout}")
+                        verification_success = True
+                    else:
+                        logging.warning(f"HDFS文件检查警告: {hdfs_result.stderr}")
+                        
+                except Exception as hdfs_e:
+                    logging.warning(f"无法执行HDFS文件检查: {hdfs_e}")
+                    
             except Exception as desc_e:
                 logging.error(f"❌ 表创建可能失败: {desc_e}")
                 raise
         
         # 显示表结构（仅对新表）
         if not table_exists:
-            logging.info(f"表 {hive_table} 的结构:")
-            schema_info = spark.sql(f"DESCRIBE {hive_table}").collect()
-            for row in schema_info:
-                logging.info(f"  {row[0]}: {row[1]}")
+            try:
+                logging.info(f"表 {hive_table} 的结构:")
+                schema_info = spark.sql(f"DESCRIBE {hive_table}").collect()
+                for row in schema_info:
+                    logging.info(f"  {row[0]}: {row[1]}")
+            except Exception as e:
+                logging.warning(f"无法获取表结构: {e}")
         
         # 显示表的详细信息包括位置
         try:
@@ -655,17 +755,23 @@ def sync_table(table_conf, **context):
         except Exception as e:
             logging.warning(f"无法获取表位置信息: {e}")
             
-        # 验证数据是否可以正常读取
-        try:
-            sample_data = spark.sql(f"SELECT * FROM {hive_table} LIMIT 1").collect()
-            if sample_data:
-                logging.info("✅ 数据验证通过 - 表可以正常读取")
-            else:
-                logging.warning("⚠️ 表存在但无数据")
-        except Exception as e:
-            logging.error(f"❌ 数据验证失败: {e}")
-            # 不抛出异常，因为表可能已经创建成功，只是验证有问题
-            logging.warning("继续执行，但建议检查表状态")
+        # 验证数据是否可以正常读取 - 只在验证成功时进行
+        if verification_success:
+            try:
+                sample_data = spark.sql(f"SELECT * FROM {hive_table} LIMIT 1").collect()
+                if sample_data:
+                    logging.info("✅ 数据验证通过 - 表可以正常读取")
+                else:
+                    logging.warning("⚠️ 表存在但无数据")
+            except Exception as e:
+                logging.error(f"❌ 数据验证失败: {e}")
+                # 如果是HDFS问题，记录但不抛出异常
+                if "BlockMissingException" in str(e):
+                    logging.warning("数据验证失败可能是由于HDFS块问题，但数据写入可能已成功")
+                else:
+                    logging.warning("继续执行，但建议检查表状态")
+        else:
+            logging.warning("跳过数据验证，因为之前的验证失败")
             
         # 验证 HDFS 中的文件（使用 Spark 的文件系统 API）
         try:
@@ -731,6 +837,29 @@ def sync_table(table_conf, **context):
             except Exception as e:
                 logging.warning(f"关闭Spark会话时出现警告: {e}")
 
+def check_hdfs_before_sync(**context):
+    """同步前的HDFS健康检查"""
+    logging.info("执行同步前的HDFS健康检查...")
+    
+    try:
+        # 检查基本连接
+        check_environment()
+        
+        # 检查HDFS健康状态
+        hdfs_healthy = check_hdfs_health()
+        
+        if not hdfs_healthy:
+            logging.error("HDFS集群不健康，建议先修复再执行同步")
+            # 可以选择抛出异常来阻止后续任务
+            # raise Exception("HDFS集群不健康")
+            logging.warning("HDFS集群可能存在问题，但继续执行同步任务")
+        
+        logging.info("✅ HDFS健康检查完成")
+        
+    except Exception as e:
+        logging.error(f"HDFS健康检查失败: {e}")
+        raise
+
 def generate_tasks(dag, config):
     """
     生成同步任务
@@ -764,6 +893,13 @@ with DAG(
     tags=["sync", "mysql", "hive"],
 ) as dag:
     
+    # HDFS健康检查任务
+    hdfs_check_task = PythonOperator(
+        task_id="check_hdfs_health",
+        python_callable=check_hdfs_before_sync,
+        dag=dag,
+    )
+    
     # 创建数据库任务
     create_databases_task = PythonOperator(
         task_id="create_hive_databases",
@@ -775,6 +911,6 @@ with DAG(
     config = load_config()
     sync_tasks = generate_tasks(dag, config)
     
-    # 设置任务依赖：先创建数据库，再执行同步任务
+    # 设置任务依赖：HDFS检查 -> 创建数据库 -> 同步任务
     if sync_tasks:
-        create_databases_task >> sync_tasks
+        hdfs_check_task >> create_databases_task >> sync_tasks

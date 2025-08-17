@@ -3,6 +3,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.dummy import DummyOperator
 from airflow.operators.bash import BashOperator
+import logging
 
 default_args = {
     'owner': 'data_team',
@@ -13,6 +14,115 @@ default_args = {
     'email_on_failure': False,
     'email_on_retry': False,
 }
+
+def load_partition_strategy_config():
+    """加载表分区策略配置"""
+    import yaml
+    import os
+    
+    config_path = '/opt/airflow/config/table_partition_strategy.yaml'
+    
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
+    else:
+        # 返回默认配置
+        logging.warning("分区策略配置文件不存在，使用默认配置")
+        return {
+            'tables': {
+                'ods.Orders': {'partition_strategy': 'daily'},
+                'ods.OrderDetails': {'partition_strategy': 'daily'},
+                'ods.Customers': {'partition_strategy': 'keep_history'},
+                'ods.Products': {'partition_strategy': 'keep_history'},
+                'ods.Employees': {'partition_strategy': 'keep_history'},
+                'ods.Warehouses': {'partition_strategy': 'latest_only'},
+                'ods.Factories': {'partition_strategy': 'latest_only'},
+                'ods.Inventory': {'partition_strategy': 'latest_only'}
+            },
+            'join_strategies': {
+                'daily': {'prefer_target_date': True, 'fallback_to_latest': True},
+                'keep_history': {'prefer_target_date': True, 'fallback_to_latest': True},
+                'latest_only': {'use_latest_always': True}
+            }
+        }
+
+def get_table_partition_strategy(spark, table_name, target_date, config=None):
+    """
+    根据配置获取表的最佳分区日期
+    
+    Args:
+        spark: Spark会话
+        table_name: 表名
+        target_date: 目标日期
+        config: 分区策略配置
+    
+    Returns:
+        最佳分区日期
+    """
+    if config is None:
+        config = load_partition_strategy_config()
+    
+    try:
+        # 获取表的分区策略
+        table_config = config['tables'].get(table_name, {})
+        partition_strategy = table_config.get('partition_strategy', 'daily')
+        
+        # 获取可用分区
+        partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
+        available_dates = [p[0].split('=')[1] for p in partitions]
+        
+        if not available_dates:
+            logging.warning(f"{table_name} 没有找到任何分区，使用目标日期: {target_date}")
+            return target_date
+        
+        # 按日期排序
+        available_dates.sort()
+        latest_date = max(available_dates)
+        
+        # 根据策略选择分区
+        join_strategy = config['join_strategies'].get(partition_strategy, {})
+        
+        if join_strategy.get('use_latest_always', False):
+            # latest_only策略：总是使用最新分区
+            logging.info(f"{table_name} (latest_only策略) 使用最新分区: dt={latest_date}")
+            return latest_date
+        
+        elif join_strategy.get('prefer_target_date', True):
+            # 优先使用目标日期分区
+            if target_date in available_dates:
+                logging.info(f"{table_name} ({partition_strategy}策略) 使用目标分区: dt={target_date}")
+                return target_date
+            elif join_strategy.get('fallback_to_latest', True):
+                logging.warning(f"{table_name} 目标分区 dt={target_date} 不存在，使用最新分区: dt={latest_date}")
+                
+                # 检查日期差异
+                from datetime import datetime
+                try:
+                    target_dt = datetime.strptime(target_date, '%Y-%m-%d')
+                    latest_dt = datetime.strptime(latest_date, '%Y-%m-%d')
+                    date_diff = abs((target_dt - latest_dt).days)
+                    
+                    if date_diff > config.get('quality_checks', {}).get('partition_date_diff_warning', 3):
+                        logging.warning(f"{table_name} 分区日期差异较大: {date_diff} 天")
+                    
+                    if date_diff > config.get('quality_checks', {}).get('partition_date_diff_error', 7):
+                        logging.error(f"{table_name} 分区日期差异过大: {date_diff} 天，可能影响数据质量")
+                        
+                except Exception as date_e:
+                    logging.warning(f"日期差异计算失败: {date_e}")
+                
+                return latest_date
+            else:
+                logging.warning(f"{table_name} 目标分区不存在且不允许回退，使用目标日期: {target_date}")
+                return target_date
+        else:
+            # 使用最新分区
+            logging.info(f"{table_name} 使用最新分区: dt={latest_date}")
+            return latest_date
+            
+    except Exception as e:
+        logging.error(f"检查 {table_name} 分区失败: {e}")
+        return target_date
 
 def extract_orders_data(**context):
     """从Hive提取Orders相关数据（基于mysql_to_hive_sync_dag的备份数据）"""
@@ -25,7 +135,7 @@ def extract_orders_data(**context):
     
     spark = None
     try:
-        # 使用与mysql_to_hive_sync_dag相同的Spark配置模式
+        # 使用与mysql_to_hive_sync_dag相同的Spark配置模式，增加连接稳定性配置
         spark = SparkSession.builder \
             .appName("DWD Orders Extract from Hive") \
             .master("local[1]") \
@@ -38,9 +148,10 @@ def extract_orders_data(**context):
             .config("spark.executor.memory", "1g") \
             .config("spark.executor.cores", "1") \
             .config("spark.driver.cores", "1") \
-            .config("spark.network.timeout", "300s") \
-            .config("spark.rpc.askTimeout", "300s") \
-            .config("spark.rpc.lookupTimeout", "300s") \
+            .config("spark.network.timeout", "800s") \
+            .config("spark.rpc.askTimeout", "600s") \
+            .config("spark.rpc.lookupTimeout", "120s") \
+            .config("spark.executor.heartbeatInterval", "60s") \
             .config("spark.sql.adaptive.enabled", "false") \
             .config("spark.sql.execution.arrow.pyspark.enabled", "false") \
             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
@@ -54,6 +165,10 @@ def extract_orders_data(**context):
             .config("spark.sql.execution.arrow.maxRecordsPerBatch", "1000") \
             .config("spark.sql.shuffle.partitions", "4") \
             .config("spark.default.parallelism", "2") \
+            .config("spark.hadoop.hive.metastore.client.connect.retry.delay", "5") \
+            .config("spark.hadoop.hive.metastore.client.socket.timeout", "1800") \
+            .config("spark.hadoop.hive.metastore.failure.retries", "3") \
+            .config("spark.hadoop.hive.metastore.client.capability.check", "false") \
             .enableHiveSupport() \
             .getOrCreate()
         
@@ -129,8 +244,46 @@ def extract_orders_data(**context):
             logging.warning(f"无法获取分区信息: {e}")
             logging.info("继续使用原始批次日期")
         
-        # 从Hive读取Orders数据，关联维度表
-        # 先尝试不加分区限制的查询，如果数据量太大再加限制
+        # 加载分区策略配置
+        partition_config = load_partition_strategy_config()
+        logging.info("✅ 分区策略配置加载成功")
+        
+        # 智能分区选择：根据配置和实际分区情况选择最佳分区
+        logging.info("开始智能分区选择...")
+        
+        dimension_tables = ['ods.Orders', 'ods.Customers', 'ods.Employees']
+        table_partition_info = {}
+        
+        for table in dimension_tables:
+            partition_date = get_table_partition_strategy(spark, table, batch_date, partition_config)
+            table_partition_info[table] = partition_date
+        
+        # 获取各表的分区日期
+        orders_partition = table_partition_info.get('ods.Orders', batch_date)
+        customers_partition = table_partition_info.get('ods.Customers', batch_date)
+        employees_partition = table_partition_info.get('ods.Employees', batch_date)
+        
+        # 数据质量检查：检查分区日期一致性
+        partition_dates = list(table_partition_info.values())
+        unique_dates = set(partition_dates)
+        
+        if len(unique_dates) > 1:
+            logging.warning("⚠️ 检测到跨日期JOIN:")
+            for table, date in table_partition_info.items():
+                logging.warning(f"  {table}: dt={date}")
+            
+            # 检查是否允许跨日期JOIN
+            if not partition_config.get('quality_checks', {}).get('allow_cross_date_join', True):
+                raise Exception("配置不允许跨日期JOIN，请检查数据同步状态")
+        else:
+            logging.info(f"✅ 所有表使用相同分区日期: dt={list(unique_dates)[0]}")
+        
+        logging.info(f"JOIN分区策略:")
+        logging.info(f"  Orders: dt={orders_partition}")
+        logging.info(f"  Customers: dt={customers_partition}")
+        logging.info(f"  Employees: dt={employees_partition}")
+        
+        # 从Hive读取Orders数据，关联维度表（使用智能分区选择）
         orders_query = f"""
         SELECT 
             o.OrderID,
@@ -154,9 +307,9 @@ def extract_orders_data(**context):
             o.CreatedDate,
             o.UpdatedDate
         FROM ods.Orders o
-        LEFT JOIN ods.Customers c ON o.CustomerID = c.CustomerID AND c.dt = '{batch_date}'
-        LEFT JOIN ods.Employees e ON o.CreatedBy = e.EmployeeID AND e.dt = '{batch_date}'
-        WHERE o.dt = '{batch_date}'
+        LEFT JOIN ods.Customers c ON o.CustomerID = c.CustomerID AND c.dt = '{customers_partition}'
+        LEFT JOIN ods.Employees e ON o.CreatedBy = e.EmployeeID AND e.dt = '{employees_partition}'
+        WHERE o.dt = '{orders_partition}'
         """
         
         # 执行查询
@@ -172,9 +325,9 @@ def extract_orders_data(**context):
             # 尝试简化查询进行调试
             try:
                 logging.info("尝试简化查询进行调试...")
-                simple_query = f"SELECT COUNT(*) as cnt FROM ods.Orders WHERE dt = '{batch_date}'"
+                simple_query = f"SELECT COUNT(*) as cnt FROM ods.Orders WHERE dt = '{orders_partition}'"
                 simple_result = spark.sql(simple_query).collect()[0]['cnt']
-                logging.info(f"Orders表在分区 dt={batch_date} 中有 {simple_result} 条记录")
+                logging.info(f"Orders表在分区 dt={orders_partition} 中有 {simple_result} 条记录")
                 
                 if simple_result == 0:
                     # 检查所有分区的数据
@@ -532,6 +685,32 @@ def transform_orders_data(**context):
         logging.error(f"Orders数据转换失败: {e}")
         raise
 
+def load_dwd_pipeline_config():
+    """加载DWD Pipeline配置"""
+    import yaml
+    import os
+    
+    config_path = '/opt/airflow/config/dwd_pipeline_config.yaml'
+    
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
+    else:
+        # 返回默认配置
+        logging.warning("DWD Pipeline配置文件不存在，使用默认配置")
+        return {
+            'environment': 'development',
+            'table_management': {
+                'development': {
+                    'drop_table_before_create': True,
+                    'backup_before_drop': False
+                }
+            },
+            'performance': {
+                'coalesce_partitions': 2
+            }
+        }
+
 def load_orders_to_hdfs(**context):
     """将转换后的Orders数据加载到HDFS - 使用Spark方式"""
     from pyspark.sql import SparkSession
@@ -613,12 +792,37 @@ def load_orders_to_hdfs(**context):
         table_location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
         logging.info(f"表将存储在 HDFS 位置: {table_location}")
         
+        # 加载DWD Pipeline配置
+        dwd_config = load_dwd_pipeline_config()
+        environment = dwd_config.get('environment', 'development')
+        table_mgmt = dwd_config.get('table_management', {}).get(environment, {})
+        
+        logging.info(f"当前环境: {environment}")
+        
         # 检查表是否已存在
         table_exists = False
         try:
             spark.sql("DESCRIBE dwd_orders")
             table_exists = True
             logging.info("DWD Orders表已存在")
+            
+            # 根据环境配置决定是否删除现有表
+            if table_mgmt.get('drop_table_before_create', False):
+                logging.info(f"{environment}环境：删除现有表以避免结构冲突")
+                
+                # 是否需要备份
+                if table_mgmt.get('backup_before_drop', False):
+                    backup_table_name = f"dwd_orders_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    try:
+                        spark.sql(f"CREATE TABLE {backup_table_name} AS SELECT * FROM dwd_orders")
+                        logging.info(f"已备份现有表到: {backup_table_name}")
+                    except Exception as e:
+                        logging.warning(f"备份表失败: {e}")
+                
+                spark.sql("DROP TABLE IF EXISTS dwd_orders")
+                table_exists = False
+                logging.info("现有表已删除")
+            
         except Exception:
             table_exists = False
             logging.info("DWD Orders表不存在，将创建新表")
@@ -634,8 +838,11 @@ def load_orders_to_hdfs(**context):
         record_count = spark_df.count()
         logging.info(f"准备写入 {record_count} 条记录")
         
+        # 获取性能配置
+        coalesce_partitions = dwd_config.get('performance', {}).get('coalesce_partitions', 2)
+        
         if table_exists:
-            # 对于已存在的表，删除当天分区再写入
+            # 表存在，执行增量更新
             partition_spec = f"dt='{batch_date}'"
             try:
                 spark.sql(f"ALTER TABLE dwd_orders DROP IF EXISTS PARTITION ({partition_spec})")
@@ -644,11 +851,11 @@ def load_orders_to_hdfs(**context):
                 logging.warning(f"删除分区时出现警告: {e}")
             
             # 按分区写入
-            spark_df.coalesce(2).write.mode("append").partitionBy("dt").options(**write_options).saveAsTable("dwd_orders")
+            spark_df.coalesce(coalesce_partitions).write.mode("append").partitionBy("dt").options(**write_options).saveAsTable("dwd_orders")
             logging.info("✅ 增量数据写入完成")
         else:
             # 创建新表
-            spark_df.coalesce(2).write.mode("overwrite").partitionBy("dt").options(**write_options).saveAsTable("dwd_orders")
+            spark_df.coalesce(coalesce_partitions).write.mode("overwrite").partitionBy("dt").options(**write_options).saveAsTable("dwd_orders")
             logging.info("✅ 新表创建完成")
         
         # 清理缓存
