@@ -1256,10 +1256,10 @@ with DAG(
         bash_command='''
         echo "=== 验证HDFS分区结构 ==="
         echo "检查DWD Orders表目录:"
-        curl -s "http://namenode:9870/webhdfs/v1/user/hive/warehouse/dwd_db/orders?op=LISTSTATUS" | python -m json.tool || echo "目录检查失败"
+        curl -s "http://namenode:9870/webhdfs/v1/user/hive/warehouse/dwd_db.db/dwd_orders?op=LISTSTATUS" | python -m json.tool || echo "目录检查失败"
         
         echo "检查年份分区:"
-        curl -s "http://namenode:9870/webhdfs/v1/user/hive/warehouse/dwd_db/orders?op=LISTSTATUS&recursive=true" | python -m json.tool || echo "递归检查失败"
+        curl -s "http://namenode:9870/webhdfs/v1/user/hive/warehouse/dwd_db.db/dwd_orders?op=LISTSTATUS&recursive=true" | python -m json.tool || echo "递归检查失败"
         
         echo "HDFS验证完成"
         ''',
