@@ -2,7 +2,9 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.dummy import DummyOperator
-from airflow.operators.email import EmailOperator
+from airflow.operators.bash import BashOperator
+
+import pandas as pd
 from airflow.models import Variable
 import logging
 
@@ -15,6 +17,76 @@ default_args = {
     'email_on_failure': True,
     'email_on_retry': False,
 }
+
+def call_deepseek_api(prompt, system_message, analysis_type="通用", max_tokens=2000):
+    """
+    统一的DeepSeek API调用函数，包含重试机制和错误处理
+    """
+    import requests
+    import time
+    import logging
+    
+    try:
+        deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
+        
+        # 从Airflow Variables获取配置，提供默认值
+        max_retries = int(Variable.get("DEEPSEEK_MAX_RETRIES", default_var="3"))
+        retry_delay = int(Variable.get("DEEPSEEK_RETRY_DELAY", default_var="5"))
+        timeout = int(Variable.get("DEEPSEEK_TIMEOUT", default_var="60"))
+        
+        for attempt in range(max_retries):
+            try:
+                logging.info(f"{analysis_type}DeepSeek API调用尝试 {attempt + 1}/{max_retries}")
+                
+                response = requests.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {deepseek_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": [
+                            {"role": "system", "content": system_message},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": max_tokens
+                    },
+                    timeout=timeout
+                )
+                
+                if response.status_code == 200:
+                    analysis_result = response.json()['choices'][0]['message']['content']
+                    logging.info(f"✅ {analysis_type}DeepSeek分析完成")
+                    return analysis_result
+                else:
+                    logging.warning(f"{analysis_type}DeepSeek API返回错误状态码: {response.status_code}, 响应: {response.text}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        return f"{analysis_type}LLM分析服务返回错误状态码: {response.status_code}"
+                        
+            except requests.exceptions.Timeout as e:
+                logging.warning(f"{analysis_type}DeepSeek API超时 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    return f"{analysis_type}LLM分析服务超时，请稍后重试。建议检查网络连接或联系管理员。"
+                    
+            except requests.exceptions.ConnectionError as e:
+                logging.warning(f"{analysis_type}DeepSeek API连接错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    return f"{analysis_type}LLM分析服务连接失败，请检查网络连接。"
+                    
+    except Exception as e:
+        logging.error(f"{analysis_type}LLM分析失败: {e}")
+        return f"{analysis_type}LLM分析过程中出现错误: {str(e)}"
 
 def analyze_daily_kpi_with_llm(**context):
     """使用LLM分析日KPI数据"""
@@ -97,40 +169,13 @@ def analyze_daily_kpi_with_llm(**context):
         请用中文回答，提供具体的数据洞察和可执行的建议。
         """
         
-        try:
-            logging.info("⚠️ agno框架不可用，回退到requests方式")
-            import requests
-            
-            deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-            
-            response = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {deepseek_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "deepseek-chat",
-                    "messages": [
-                        {"role": "system", "content": "你是一名专业的数据分析师，擅长电商订单数据分析。"},
-                        {"role": "user", "content": analysis_prompt}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 2000
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                analysis_result = response.json()['choices'][0]['message']['content']
-                logging.info("✅ DeepSeek分析完成")
-            else:
-                logging.error(f"DeepSeek API调用失败: {response.status_code}")
-                analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
-                
-        except Exception as e:
-            logging.error(f"LLM分析失败: {e}")
-            analysis_result = f"LLM分析过程中出现错误: {str(e)}"
+        # 使用统一的API调用函数
+        analysis_result = call_deepseek_api(
+            prompt=analysis_prompt,
+            system_message="你是一名专业的数据分析师，擅长电商订单数据分析。",
+            analysis_type="日KPI",
+            max_tokens=2000
+        )
         
         # 保存分析结果
         analysis_data = {
@@ -264,41 +309,13 @@ def analyze_customer_segments_with_llm(**context):
         请用中文回答，提供具体的客户洞察和可执行的CRM策略。
         """
         
-        try:
-            
-            logging.info("⚠️ agno框架不可用，回退到requests方式")
-            import requests
-            
-            deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-            
-            response = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {deepseek_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "deepseek-chat",
-                    "messages": [
-                        {"role": "system", "content": "你是一名专业的客户关系管理专家，擅长客户分析和CRM策略制定。"},
-                        {"role": "user", "content": analysis_prompt}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 2500
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                analysis_result = response.json()['choices'][0]['message']['content']
-                logging.info("✅ 客户分段DeepSeek分析完成")
-            else:
-                logging.error(f"DeepSeek API调用失败: {response.status_code}")
-                analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
-                
-        except Exception as e:
-            logging.error(f"客户分段LLM分析失败: {e}")
-            analysis_result = f"LLM分析过程中出现错误: {str(e)}"
+        # 使用统一的API调用函数
+        analysis_result = call_deepseek_api(
+            prompt=analysis_prompt,
+            system_message="你是一名专业的客户关系管理专家，擅长客户分析和CRM策略制定。",
+            analysis_type="客户分段",
+            max_tokens=2500
+        )
         
         # 保存分析结果
         analysis_data = {
@@ -450,39 +467,13 @@ def analyze_monthly_trends_with_llm(**context):
         请用中文回答，提供具体的趋势洞察和战略建议。
         """
         
-        try:
-            import requests
-            
-            deepseek_api_key = Variable.get("DEEPSEEK_API_KEY", default_var="your_deepseek_api_key")
-            
-            response = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {deepseek_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "deepseek-chat",
-                    "messages": [
-                        {"role": "system", "content": "你是一名专业的业务分析专家，擅长趋势分析和战略规划。"},
-                        {"role": "user", "content": analysis_prompt}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 2500
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                analysis_result = response.json()['choices'][0]['message']['content']
-                logging.info("✅ 月度趋势DeepSeek分析完成")
-            else:
-                logging.error(f"DeepSeek API调用失败: {response.status_code}")
-                analysis_result = "LLM分析服务暂时不可用，请稍后重试。"
-                
-        except Exception as e:
-            logging.error(f"月度趋势LLM分析失败: {e}")
-            analysis_result = f"LLM分析过程中出现错误: {str(e)}"
+        # 使用统一的API调用函数
+        analysis_result = call_deepseek_api(
+            prompt=analysis_prompt,
+            system_message="你是一名专业的业务分析专家，擅长趋势分析和战略规划。",
+            analysis_type="月度趋势",
+            max_tokens=2500
+        )
         
         # 保存分析结果
         analysis_data = {
@@ -737,11 +728,76 @@ with DAG(
         report_html = context['task_instance'].xcom_pull(task_ids='generate_comprehensive_report', key='comprehensive_report')
         return report_html or "报告生成失败，请检查日志。"
 
-    send_email_task = EmailOperator(
+    def get_email_config(**context):
+        """从Airflow Variables获取邮件配置"""
+        from airflow.models import Variable
+        import json
+        
+        # 获取邮件收件人列表
+        try:
+            recipients_str = Variable.get("EMAIL_RECIPIENTS", default_var='["liujianglc@163.com"]')
+            recipients = json.loads(recipients_str)
+        except (json.JSONDecodeError, Exception):
+            recipients = ['liujianglc@163.com']
+        
+        # 获取邮件主题
+        subject = Variable.get("EMAIL_SUBJECT", default_var="📊 订单数据智能分析报告 - {{ ds }}")
+        
+        return recipients, subject
+
+    def send_email_with_config(**context):
+        """使用配置发送邮件"""
+        from airflow.models import Variable
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from email.utils import formatdate
+        
+        # 获取邮件配置
+        recipients, subject = get_email_config(**context)
+        
+        # 获取报告内容
+        report_content = context['task_instance'].xcom_pull(
+            task_ids='generate_comprehensive_report', 
+            key='comprehensive_report'
+        ) or "报告生成失败，请检查日志。"
+        
+        # 获取SMTP配置
+        smtp_host = Variable.get("SMTP_HOST", default_var="localhost")
+        smtp_port = int(Variable.get("SMTP_PORT", default_var="25"))
+        smtp_user = Variable.get("SMTP_USER", default_var="")
+        smtp_password = Variable.get("SMTP_PASSWORD", default_var="")
+        smtp_use_tls = Variable.get("SMTP_USE_TLS", default_var="False").lower() == "true"
+        sender = Variable.get("EMAIL_SENDER", default_var="airflow@localhost")
+        
+        # 创建邮件
+        msg = MIMEMultipart()
+        msg['From'] = sender
+        msg['To'] = ", ".join(recipients) if isinstance(recipients, list) else recipients
+        msg['Date'] = formatdate(localtime=True)
+        msg['Subject'] = subject
+        
+        # 添加HTML内容
+        msg.attach(MIMEText(report_content, 'html', 'utf-8'))
+        
+        try:
+            # 发送邮件
+            server = smtplib.SMTP(smtp_host, smtp_port)
+            if smtp_use_tls:
+                server.starttls()
+            if smtp_user and smtp_password:
+                server.login(smtp_user, smtp_password)
+            
+            server.sendmail(sender, recipients, msg.as_string())
+            server.quit()
+            return "✅ 邮件发送成功"
+        except Exception as e:
+            raise Exception(f"❌ 邮件发送失败: {str(e)}")
+
+    # 使用PythonOperator替代EmailOperator
+    send_email_task = PythonOperator(
         task_id='send_analysis_report',
-        to=['liujianglc@163.com'],
-        subject='📊 订单数据智能分析报告 - {{ ds }}',
-        html_content="{{ task_instance.xcom_pull(task_ids='generate_comprehensive_report', key='comprehensive_report') }}",
+        python_callable=send_email_with_config,
         doc_md="发送包含LLM分析洞察的综合报告邮件"
     )
 
