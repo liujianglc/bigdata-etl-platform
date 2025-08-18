@@ -88,6 +88,107 @@ def call_deepseek_api(prompt, system_message, analysis_type="通用", max_tokens
         logging.error(f"{analysis_type}LLM分析失败: {e}")
         return f"{analysis_type}LLM分析过程中出现错误: {str(e)}"
 
+def send_via_smtp(msg, host, port, user, password, use_tls, recipients):
+    """通过SMTP发送邮件"""
+    import smtplib
+    
+    server = None
+    try:
+        server = smtplib.SMTP(host, port, timeout=30)
+        server.set_debuglevel(0)  # 设置为1可以看到详细调试信息
+        
+        if use_tls:
+            server.starttls()
+        
+        if user and password:
+            server.login(user, password)
+        
+        server.sendmail(msg['From'], recipients, msg.as_string())
+        return True
+    finally:
+        if server:
+            try:
+                server.quit()
+            except:
+                pass
+
+def send_via_smtp_ssl(msg, host, port, user, password, recipients):
+    """通过SMTP_SSL发送邮件"""
+    import smtplib
+    
+    server = None
+    try:
+        server = smtplib.SMTP_SSL(host, port, timeout=30)
+        
+        if user and password:
+            server.login(user, password)
+        
+        server.sendmail(msg['From'], recipients, msg.as_string())
+        return True
+    finally:
+        if server:
+            try:
+                server.quit()
+            except:
+                pass
+
+def send_via_sendmail(msg, recipients):
+    """通过系统sendmail发送邮件"""
+    import subprocess
+    
+    # 检查系统是否有sendmail
+    try:
+        subprocess.run(['which', 'sendmail'], check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        raise Exception("系统未安装sendmail")
+    
+    # 使用sendmail发送
+    process = subprocess.Popen(
+        ['sendmail'] + recipients,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    
+    stdout, stderr = process.communicate(msg.as_string())
+    
+    if process.returncode == 0:
+        return True
+    else:
+        raise Exception(f"Sendmail失败: {stderr}")
+
+def save_report_to_file(report_content, context):
+    """将报告保存到文件作为备选方案"""
+    import os
+    from datetime import datetime
+    import logging
+    
+    try:
+        # 创建报告目录
+        report_dir = "/opt/airflow/reports"
+        os.makedirs(report_dir, exist_ok=True)
+        
+        # 生成文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"llm_analysis_report_{context['ds']}_{timestamp}.html"
+        filepath = os.path.join(report_dir, filename)
+        
+        # 保存报告
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(report_content)
+        
+        logging.info(f"📄 报告已保存到文件: {filepath}")
+        
+        # 同时保存XCom供其他任务使用
+        context['task_instance'].xcom_push(key='report_file_path', value=filepath)
+        
+        return f"📄 报告已保存到文件: {filepath}"
+        
+    except Exception as e:
+        logging.error(f"❌ 保存报告到文件失败: {e}")
+        return f"❌ 报告保存失败: {str(e)}"
+
 def analyze_daily_kpi_with_llm(**context):
     """使用LLM分析日KPI数据"""
     from pyspark.sql import SparkSession
@@ -822,101 +923,7 @@ with DAG(
         logging.warning("📧 所有邮件发送方法都失败，将保存报告到文件")
         return save_report_to_file(report_content, context)
 
-    def send_via_smtp(msg, host, port, user, password, use_tls, recipients):
-        """通过SMTP发送邮件"""
-        server = None
-        try:
-            server = smtplib.SMTP(host, port, timeout=30)
-            server.set_debuglevel(0)  # 设置为1可以看到详细调试信息
-            
-            if use_tls:
-                server.starttls()
-            
-            if user and password:
-                server.login(user, password)
-            
-            server.sendmail(msg['From'], recipients, msg.as_string())
-            return True
-        finally:
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
 
-    def send_via_smtp_ssl(msg, host, port, user, password, recipients):
-        """通过SMTP_SSL发送邮件"""
-        server = None
-        try:
-            server = smtplib.SMTP_SSL(host, port, timeout=30)
-            
-            if user and password:
-                server.login(user, password)
-            
-            server.sendmail(msg['From'], recipients, msg.as_string())
-            return True
-        finally:
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
-
-    def send_via_sendmail(msg, recipients):
-        """通过系统sendmail发送邮件"""
-        import subprocess
-        
-        # 检查系统是否有sendmail
-        try:
-            subprocess.run(['which', 'sendmail'], check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            raise Exception("系统未安装sendmail")
-        
-        # 使用sendmail发送
-        process = subprocess.Popen(
-            ['sendmail'] + recipients,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        stdout, stderr = process.communicate(msg.as_string())
-        
-        if process.returncode == 0:
-            return True
-        else:
-            raise Exception(f"Sendmail失败: {stderr}")
-
-    def save_report_to_file(report_content, context):
-        """将报告保存到文件作为备选方案"""
-        import os
-        from datetime import datetime
-        
-        try:
-            # 创建报告目录
-            report_dir = "/opt/airflow/reports"
-            os.makedirs(report_dir, exist_ok=True)
-            
-            # 生成文件名
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"llm_analysis_report_{context['ds']}_{timestamp}.html"
-            filepath = os.path.join(report_dir, filename)
-            
-            # 保存报告
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(report_content)
-            
-            logging.info(f"📄 报告已保存到文件: {filepath}")
-            
-            # 同时保存XCom供其他任务使用
-            context['task_instance'].xcom_push(key='report_file_path', value=filepath)
-            
-            return f"📄 报告已保存到文件: {filepath}"
-            
-        except Exception as e:
-            logging.error(f"❌ 保存报告到文件失败: {e}")
-            return f"❌ 报告保存失败: {str(e)}"
 
     # 使用PythonOperator替代EmailOperator
     send_email_task = PythonOperator(
