@@ -842,7 +842,7 @@ with DAG(
             recipients = ['liujianglc@163.com']
         
         # 获取邮件主题
-        subject = Variable.get("EMAIL_SUBJECT", default_var="📊 订单数据智能分析报告 - {{ ds }}")
+        subject = Variable.get("EMAIL_SUBJECT", default_var="📊 订单数据智能分析报告")
         
         return recipients, subject
 
