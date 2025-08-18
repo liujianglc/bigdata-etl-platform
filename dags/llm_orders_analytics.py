@@ -746,12 +746,14 @@ with DAG(
         return recipients, subject
 
     def send_email_with_config(**context):
-        """使用配置发送邮件"""
+        """使用配置发送邮件，支持多种发送方式"""
         from airflow.models import Variable
         import smtplib
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
         from email.utils import formatdate
+        import logging
+        import os
         
         # 获取邮件配置
         recipients, subject = get_email_config(**context)
@@ -762,13 +764,20 @@ with DAG(
             key='comprehensive_report'
         ) or "报告生成失败，请检查日志。"
         
+        # 检查是否启用邮件发送
+        email_enabled = Variable.get("EMAIL_ENABLED", default_var="True").lower() == "true"
+        if not email_enabled:
+            logging.info("📧 邮件发送已禁用，将保存报告到文件")
+            return save_report_to_file(report_content, context)
+        
         # 获取SMTP配置
         smtp_host = Variable.get("SMTP_HOST", default_var="localhost")
         smtp_port = int(Variable.get("SMTP_PORT", default_var="25"))
         smtp_user = Variable.get("SMTP_USER", default_var="")
         smtp_password = Variable.get("SMTP_PASSWORD", default_var="")
         smtp_use_tls = Variable.get("SMTP_USE_TLS", default_var="False").lower() == "true"
-        sender = Variable.get("EMAIL_SENDER", default_var="airflow@localhost")
+        smtp_use_ssl = Variable.get("SMTP_USE_SSL", default_var="False").lower() == "true"
+        sender = Variable.get("EMAIL_SENDER", default_var="liujianglc@163.com")
         
         # 创建邮件
         msg = MIMEMultipart()
@@ -780,19 +789,134 @@ with DAG(
         # 添加HTML内容
         msg.attach(MIMEText(report_content, 'html', 'utf-8'))
         
+        # 尝试多种发送方式
+        email_methods = [
+            ("SMTP", send_via_smtp),
+            ("SMTP_SSL", send_via_smtp_ssl),
+            ("Sendmail", send_via_sendmail)
+        ]
+        
+        for method_name, method_func in email_methods:
+            try:
+                logging.info(f"📧 尝试使用 {method_name} 发送邮件...")
+                
+                if method_name == "SMTP":
+                    result = method_func(msg, smtp_host, smtp_port, smtp_user, smtp_password, smtp_use_tls, recipients)
+                elif method_name == "SMTP_SSL":
+                    if smtp_use_ssl:
+                        result = method_func(msg, smtp_host, smtp_port, smtp_user, smtp_password, recipients)
+                    else:
+                        continue
+                elif method_name == "Sendmail":
+                    result = method_func(msg, recipients)
+                
+                if result:
+                    logging.info(f"✅ 邮件通过 {method_name} 发送成功")
+                    return f"✅ 邮件通过 {method_name} 发送成功"
+                    
+            except Exception as e:
+                logging.warning(f"⚠️ {method_name} 发送失败: {e}")
+                continue
+        
+        # 所有方法都失败，保存到文件作为备选方案
+        logging.warning("📧 所有邮件发送方法都失败，将保存报告到文件")
+        return save_report_to_file(report_content, context)
+
+    def send_via_smtp(msg, host, port, user, password, use_tls, recipients):
+        """通过SMTP发送邮件"""
+        server = None
         try:
-            # 发送邮件
-            server = smtplib.SMTP(smtp_host, smtp_port)
-            if smtp_use_tls:
-                server.starttls()
-            if smtp_user and smtp_password:
-                server.login(smtp_user, smtp_password)
+            server = smtplib.SMTP(host, port, timeout=30)
+            server.set_debuglevel(0)  # 设置为1可以看到详细调试信息
             
-            server.sendmail(sender, recipients, msg.as_string())
-            server.quit()
-            return "✅ 邮件发送成功"
+            if use_tls:
+                server.starttls()
+            
+            if user and password:
+                server.login(user, password)
+            
+            server.sendmail(msg['From'], recipients, msg.as_string())
+            return True
+        finally:
+            if server:
+                try:
+                    server.quit()
+                except:
+                    pass
+
+    def send_via_smtp_ssl(msg, host, port, user, password, recipients):
+        """通过SMTP_SSL发送邮件"""
+        server = None
+        try:
+            server = smtplib.SMTP_SSL(host, port, timeout=30)
+            
+            if user and password:
+                server.login(user, password)
+            
+            server.sendmail(msg['From'], recipients, msg.as_string())
+            return True
+        finally:
+            if server:
+                try:
+                    server.quit()
+                except:
+                    pass
+
+    def send_via_sendmail(msg, recipients):
+        """通过系统sendmail发送邮件"""
+        import subprocess
+        
+        # 检查系统是否有sendmail
+        try:
+            subprocess.run(['which', 'sendmail'], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            raise Exception("系统未安装sendmail")
+        
+        # 使用sendmail发送
+        process = subprocess.Popen(
+            ['sendmail'] + recipients,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        stdout, stderr = process.communicate(msg.as_string())
+        
+        if process.returncode == 0:
+            return True
+        else:
+            raise Exception(f"Sendmail失败: {stderr}")
+
+    def save_report_to_file(report_content, context):
+        """将报告保存到文件作为备选方案"""
+        import os
+        from datetime import datetime
+        
+        try:
+            # 创建报告目录
+            report_dir = "/opt/airflow/reports"
+            os.makedirs(report_dir, exist_ok=True)
+            
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"llm_analysis_report_{context['ds']}_{timestamp}.html"
+            filepath = os.path.join(report_dir, filename)
+            
+            # 保存报告
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(report_content)
+            
+            logging.info(f"📄 报告已保存到文件: {filepath}")
+            
+            # 同时保存XCom供其他任务使用
+            context['task_instance'].xcom_push(key='report_file_path', value=filepath)
+            
+            return f"📄 报告已保存到文件: {filepath}"
+            
         except Exception as e:
-            raise Exception(f"❌ 邮件发送失败: {str(e)}")
+            logging.error(f"❌ 保存报告到文件失败: {e}")
+            return f"❌ 报告保存失败: {str(e)}"
 
     # 使用PythonOperator替代EmailOperator
     send_email_task = PythonOperator(
