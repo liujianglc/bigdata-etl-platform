@@ -192,7 +192,11 @@ def create_orderdetails_hive_views(**context):
     try:
         spark = SparkSession.builder.appName("CreateDWDViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
-        views = ["CREATE OR REPLACE VIEW dwd_orderdetails_high_value AS SELECT * FROM dwd_orderdetails WHERE IsHighValue = true", "CREATE OR REPLACE VIEW dwd_orderdetails_product_summary AS SELECT ProductID, ProductName, ProductCategory, COUNT(*) as order_count, SUM(Quantity) as total_quantity, SUM(NetAmount) as total_amount FROM dwd_orderdetails GROUP BY ProductID, ProductName, ProductCategory"]
+        views = [
+            "CREATE OR REPLACE VIEW dwd_orderdetails_high_value AS SELECT * FROM dwd_orderdetails WHERE IsHighValue = true", 
+            "CREATE OR REPLACE VIEW dwd_orderdetails_product_summary AS SELECT ProductID, ProductName, ProductCategory, COUNT(*) as order_count, SUM(Quantity) as total_quantity, SUM(NetAmount) as total_amount FROM dwd_orderdetails GROUP BY ProductID, ProductName, ProductCategory",
+            "CREATE OR REPLACE VIEW dwd_orderdetails_discounted AS SELECT * FROM dwd_orderdetails WHERE IsDiscounted = true AND Discount > 0"
+        ]
         for v in views: spark.sql(v)
         logging.info(f"✅ Successfully created {len(views)} views.")
     except Exception as e:
