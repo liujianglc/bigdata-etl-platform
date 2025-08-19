@@ -16,7 +16,7 @@ def run_dws_orders_analytics_etl(**context):
     from pyspark.sql import SparkSession
     from pyspark.sql.functions import col, sum, count, avg, max, min, when, lit, date_format, year, month, datediff, desc
     from pyspark.sql.types import DecimalType, DoubleType
-    from config.data_types_config import AMOUNT, AVERAGE, RATE, DAYS
+    from config.data_types_config import AMOUNT, AVERAGE, RATE, DAYS, FREQUENCY
     import logging
     import os
     from datetime import datetime, timedelta
