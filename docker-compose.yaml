@@ -120,7 +120,7 @@ services:
       - SPARK_MASTER_OPTS=-XX:+UseG1GC -XX:+UseStringDeduplication
       - SPARK_MASTER_WEBUI_PORT=8080
       - SPARK_MASTER_PORT=${SPARK_MASTER_PORT:-7077}
-      - SPARK_DAEMON_MEMORY=${SPARK_MASTER_MEMORY:-2g}
+      - SPARK_DAEMON_MEMORY=${SPARK_MASTER_MEMORY:-3g}
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
@@ -151,7 +151,7 @@ services:
       - JAVA_HOME=/usr/lib/jvm/java-8-openjdk
       # JVM 优化配置
       - SPARK_WORKER_OPTS=-XX:+UseG1GC -XX:+UseStringDeduplication
-      - SPARK_DAEMON_MEMORY=${SPARK_WORKER_JVM_MEMORY:-2g}
+      - SPARK_DAEMON_MEMORY=${SPARK_WORKER_JVM_MEMORY:-3g}
     volumes:
       - ./spark_jobs:/opt/spark-jobs
       - ./config:/opt/spark-config
@@ -387,6 +387,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.airflow
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+        reservations:
+          memory: 4G
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -416,6 +422,11 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_PRE_PING: 'true'
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_RECYCLE: '3600'
       AIRFLOW__DATABASE__SQL_ALCHEMY_ENGINE_ARGS: '{"pool_reset_on_return": "commit"}'
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-4g}
+      SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-4g}
+      SPARK_DRIVER_MAX_RESULT_SIZE: ${SPARK_DRIVER_MAX_RESULT_SIZE:-2g}
+      SPARK_DRIVER_JAVA_OPTIONS: ${SPARK_DRIVER_JAVA_OPTIONS}
+      SPARK_EXECUTOR_JAVA_OPTIONS: ${SPARK_EXECUTOR_JAVA_OPTIONS}
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs:rw
