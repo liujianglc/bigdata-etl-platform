@@ -107,7 +107,19 @@ def run_dws_orderdetails_analytics_etl(**context):
                     when(col("total_revenue") >= 100000, "Tier 1")
                     .when(col("total_revenue") >= 50000, "Tier 2")
                     .when(col("total_revenue") >= 10000, "Tier 3")
-                    .otherwise("Tier 4"))
+                    .otherwise("Tier 4")) \
+         .withColumn("demand_level",
+                    when(col("total_quantity_sold") >= 1000, "High")
+                    .when(col("total_quantity_sold") >= 500, "Medium")
+                    .when(col("total_quantity_sold") >= 100, "Low")
+                    .otherwise("Very Low")) \
+         .withColumn("product_performance_score",
+                    ((col("delivery_rate") * 0.4) + 
+                     ((100 - col("cancellation_rate")) * 0.3) + 
+                     (when(col("total_revenue") >= 100000, 100)
+                      .when(col("total_revenue") >= 50000, 80)
+                      .when(col("total_revenue") >= 10000, 60)
+                      .otherwise(40) * 0.3)).cast(DecimalType(18, 2)))
 
         product_analytics_with_dt = product_analytics.withColumn("dt", lit(batch_date))
         product_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_product_analytics").saveAsTable("dws_product_analytics")
@@ -177,7 +189,7 @@ def create_analytics_views(**context):
                 logging.warning(f"Could not drop view: {e}")
         
         views_sql = [
-            "CREATE VIEW dws_product_performance AS SELECT product_name, product_tier, total_revenue, total_quantity_sold FROM dws_product_analytics ORDER BY total_revenue DESC",
+            "CREATE VIEW dws_product_performance AS SELECT product_name, product_tier, total_revenue, total_quantity_sold, demand_level, product_performance_score FROM dws_product_analytics ORDER BY product_performance_score DESC",
             "CREATE VIEW dws_warehouse_performance AS SELECT warehouse_name, factory_name, total_items_processed, total_value_handled, delivery_rate, avg_efficiency_score, warehouse_performance_grade FROM dws_warehouse_analytics ORDER BY avg_efficiency_score DESC"
         ]
         
