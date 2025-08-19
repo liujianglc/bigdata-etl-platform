@@ -30,29 +30,48 @@ def load_config(file_path, default_config={}):
         return default_config
 
 def get_table_partition_strategy(spark, table_name, target_date, config):
-    """根据配置获取表的最佳分区日期"""
+    """根据配置获取表的最佳分区日期，能处理非分区表。"""
     try:
         table_config = config.get('tables', {}).get(table_name, {})
-        partition_strategy = table_config.get('partition_strategy', 'daily')
+        partition_strategy = table_config.get('partition_strategy')
+
+        # 如果策略是 aatest_only，我们知道它没有分区，直接返回None
+        if partition_strategy == 'latest_only':
+            logging.info(f"表 {table_name} 策略为 'latest_only'，不使用分区进行JOIN。")
+            return None
+
+        # 对于其他策略，我们假设它是分区的并继续
         partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
         available_dates = [p[0].split('=')[1] for p in partitions]
+        
         if not available_dates:
+            logging.warning(f"{table_name} 是分区表但未找到任何分区，使用目标日期: {target_date}")
             return target_date
+        
         available_dates.sort()
         latest_date = max(available_dates)
         join_strategy = config.get('join_strategies', {}).get(partition_strategy, {})
+        
         if join_strategy.get('use_latest_always', False):
             return latest_date
+        
         if join_strategy.get('prefer_target_date', True):
             if target_date in available_dates:
                 return target_date
             if join_strategy.get('fallback_to_latest', True):
                 logging.warning(f"{table_name} 目标分区 dt={target_date} 不存在，回退到最新分区: dt={latest_date}")
                 return latest_date
+        
         return target_date
+            
     except Exception as e:
-        logging.error(f"检查 {table_name} 分区失败: {e}")
-        return target_date
+        # 异常处理作为备用，以防配置和实际情况不符
+        if "PARTITION_SCHEMA_IS_EMPTY" in str(e) or "is not partitioned" in str(e):
+             logging.warning(f"表 {table_name} 配置为分区表，但实际上未找到分区。将不使用分区进行JOIN。")
+             return None
+        else:
+            logging.error(f"检查 {table_name} 分区失败: {e}")
+            return target_date # 回退
 
 # =============================================================================
 # MAIN SPARK ETL TASK
@@ -87,9 +106,30 @@ def run_dwd_orderdetails_etl(**context):
         logging.info(f"Starting ETL for batch date: {batch_date}")
 
         partition_config = load_config('/opt/airflow/config/table_partition_strategy.yaml')
-        table_partition_info = {t: get_table_partition_strategy(spark, t, batch_date, partition_config) for t in ['ods.Orders', 'ods.Customers', 'ods.Products', 'ods.Warehouses', 'ods.Factories']}
+        dim_tables_to_join = ['ods.Orders', 'ods.Customers', 'ods.Products', 'ods.Warehouses', 'ods.Factories']
+        table_partition_info = {t: get_table_partition_strategy(spark, t, batch_date, partition_config) for t in dim_tables_to_join}
         
-        query = f"""SELECT od.*, o.CustomerID, c.CustomerName, c.CustomerType, p.ProductName, p.Category as ProductCategory, p.Specification as ProductSpecification, w.WarehouseName, w.Manager as WarehouseManager, f.FactoryName, f.Location as FactoryLocation, o.OrderDate, o.Status as OrderStatus, o.PaymentMethod, o.PaymentStatus FROM ods.OrderDetails od LEFT JOIN ods.Orders o ON od.OrderID=o.OrderID AND o.dt='{table_partition_info["ods.Orders"]}' LEFT JOIN ods.Customers c ON o.CustomerID=c.CustomerID AND c.dt='{table_partition_info["ods.Customers"]}' LEFT JOIN ods.Products p ON od.ProductID=p.ProductID AND p.dt='{table_partition_info["ods.Products"]}' LEFT JOIN ods.Warehouses w ON od.WarehouseID=w.WarehouseID AND w.dt='{table_partition_info["ods.Warehouses"]}' LEFT JOIN ods.Factories f ON w.FactoryID=f.FactoryID AND f.dt='{table_partition_info["ods.Factories"]}' WHERE od.dt='{batch_date}'"""
+        # 动态构建JOIN子句
+        join_clauses = []
+        dim_tables_meta = {
+            'ods.Orders': ('o', 'od.OrderID = o.OrderID'),
+            'ods.Customers': ('c', 'o.CustomerID = c.CustomerID'),
+            'ods.Products': ('p', 'od.ProductID = p.ProductID'),
+            'ods.Warehouses': ('w', 'od.WarehouseID = w.WarehouseID'),
+            'ods.Factories': ('f', 'w.FactoryID = f.FactoryID')
+        }
+
+        for table, (alias, join_cond) in dim_tables_meta.items():
+            partition_date = table_partition_info.get(table)
+            partition_filter = f" AND {alias}.dt = '{partition_date}'" if partition_date else ""
+            join_clauses.append(f"LEFT JOIN {table} {alias} ON {join_cond}{partition_filter}")
+
+        join_sql = "\n".join(join_clauses)
+
+        # 构建最终查询
+        query = f"""SELECT od.*, o.CustomerID, c.CustomerName, c.CustomerType, p.ProductName, p.Category as ProductCategory, p.Specification as ProductSpecification, w.WarehouseName, w.Manager as WarehouseManager, f.FactoryName, f.Location as FactoryLocation, o.OrderDate, o.Status as OrderStatus, o.PaymentMethod, o.PaymentStatus FROM ods.OrderDetails od {join_sql} WHERE od.dt='{batch_date}'"""
+        
+        logging.info(f"Executing dynamically generated query:\n{query}")
         df = spark.sql(query)
         df.cache()
         
@@ -101,6 +141,7 @@ def run_dwd_orderdetails_etl(**context):
         record_count = df.count()
         logging.info(f"✅ Extracted {record_count} records.")
 
+        # ... (The rest of the transformation and loading logic remains the same) ...
         logging.info("Starting data transformation...")
         maps = load_config('/opt/airflow/dags/config/orderdetail_status_mapping.yaml', {'orderdetail_status_mapping': {}, 'product_category_mapping': {}})
         status_map = create_map([lit(x) for c in maps['orderdetail_status_mapping'].items() for x in c])
@@ -171,7 +212,7 @@ def validate_orderdetails_dwd(**context):
     issues = []
     if stats['total_records'] != summary['total_records']:
         issues.append("Record count mismatch between transform and load stages.")
-    if stats['quality_distribution'].get('Poor', 0) / stats['total_records'] > 0.1:
+    if stats['total_records'] > 0 and stats['quality_distribution'].get('Poor', 0) / stats['total_records'] > 0.1:
         issues.append("High ratio of poor quality data.")
 
     if issues:
