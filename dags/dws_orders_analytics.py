@@ -66,14 +66,17 @@ def run_dws_orders_analytics_etl(**context):
                 avg("ProcessingDays").alias("avg_processing_days"),
                 max("TotalAmount").alias("max_order_amount"),
                 min("TotalAmount").alias("min_order_amount"),
-                count(when(col("DataQualityLevel") == "Excellent", 1)).alias("excellent_quality_orders"),
+                count(when(col("DataQualityLevel") == "Good", 1)).alias("good_quality_orders"),
                 count(when(col("DataQualityLevel") == "Poor", 1)).alias("poor_quality_orders")
             ).withColumn("completion_rate", (col("completed_orders") / col("total_orders") * 100)) \
              .withColumn("cancellation_rate", (col("cancelled_orders") / col("total_orders") * 100)) \
              .withColumn("delay_rate", (col("delayed_orders") / col("total_orders") * 100)) \
-             .withColumn("data_quality_score", ((col("excellent_quality_orders") * 4 + (col("total_orders") - col("excellent_quality_orders") - col("poor_quality_orders")) * 2) / col("total_orders")))
+             .withColumn("data_quality_score", ((col("good_quality_orders") * 4 + (col("total_orders") - col("good_quality_orders") - col("poor_quality_orders")) * 2) / col("total_orders")))
             
-            daily_summary.withColumn("dt", lit(batch_date)).write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary").saveAsTable("dws_orders_daily_summary")
+            daily_summary.withColumn("dt", lit(batch_date)) \
+                .write.mode("overwrite").partitionBy("dt").format("parquet") \
+                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary") \
+                .saveAsTable("dws_orders_daily_summary")
             logging.info("✅ Daily aggregation complete and loaded.")
 
         # --- 2. Monthly Aggregation ---
@@ -105,7 +108,10 @@ def run_dws_orders_analytics_etl(**context):
              .withColumn("vip_ratio", (col("vip_orders") / col("total_orders") * 100)) \
              .withColumn("large_order_ratio", (col("large_orders") / col("total_orders") * 100))
 
-            monthly_summary.withColumn("dt", lit(batch_date)).write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_monthly_summary").saveAsTable("dws_orders_monthly_summary")
+            monthly_summary.withColumn("dt", lit(batch_date)) \
+                .write.mode("overwrite").partitionBy("dt").format("parquet") \
+                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_monthly_summary") \
+                .saveAsTable("dws_orders_monthly_summary")
             logging.info("✅ Monthly aggregation complete and loaded.")
 
         # --- 3. Customer Analytics ---
@@ -142,7 +148,10 @@ def run_dws_orders_analytics_etl(**context):
                     .when(col("days_since_last_order") <= 90, "Inactive")
                     .otherwise("Dormant"))
         
-        customer_analytics.withColumn("dt", lit(batch_date)).write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_customer_analytics").saveAsTable("dws_customer_analytics")
+        customer_analytics.withColumn("dt", lit(batch_date)) \
+            .write.mode("overwrite").partitionBy("dt").format("parquet") \
+            .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_customer_analytics") \
+            .saveAsTable("dws_customer_analytics")
         logging.info("✅ Customer analytics complete and loaded.")
 
         dwd_df_30d.unpersist()
@@ -172,7 +181,7 @@ def create_analytics_views(**context):
         views_sql = [
             "CREATE OR REPLACE VIEW dws_orders_weekly_trend AS SELECT order_date, total_orders, total_amount FROM dws_orders_daily_summary WHERE order_date >= date_sub(current_date(), 7) ORDER BY order_date DESC",
             "CREATE OR REPLACE VIEW dws_orders_monthly_trend AS SELECT year_month, total_orders, total_amount, avg_order_value FROM dws_orders_monthly_summary ORDER BY year_month DESC",
-            "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT CustomerID, CustomerName, total_spent, total_orders, last_order_date FROM dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
+            "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT CustomerID, CustomerName, total_spent, total_orders, last_order_date, customer_segment FROM dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
         ]
         
         for view_sql in views_sql:

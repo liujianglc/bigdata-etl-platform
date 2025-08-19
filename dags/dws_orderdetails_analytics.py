@@ -135,8 +135,8 @@ def create_analytics_views(**context):
         spark.sql("USE dws_db")
         
         views_sql = [
-            "CREATE OR REPLACE VIEW dws_product_performance AS SELECT ProductName, product_tier, total_revenue, total_quantity_sold FROM dws_product_analytics ORDER BY total_revenue DESC",
-            "CREATE OR REPLACE VIEW dws_warehouse_performance AS SELECT WarehouseName, FactoryName, total_items_processed, total_value_handled, avg_efficiency_score, warehouse_performance_grade FROM dws_warehouse_analytics ORDER BY avg_efficiency_score DESC"
+            "CREATE OR REPLACE VIEW dws_product_performance AS SELECT product_name, product_tier, total_revenue, total_quantity_sold FROM dws_product_analytics ORDER BY total_revenue DESC",
+            "CREATE OR REPLACE VIEW dws_warehouse_performance AS SELECT warehouse_name, factory_name, total_items_processed, total_value_handled, avg_efficiency_score, warehouse_performance_grade FROM dws_warehouse_analytics ORDER BY avg_efficiency_score DESC"
         ]
         
         for view_sql in views_sql:
