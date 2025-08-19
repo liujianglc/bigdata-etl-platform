@@ -147,7 +147,7 @@ def run_dwd_orderdetails_etl(**context):
         status_map = create_map([lit(x) for c in maps['orderdetail_status_mapping'].items() for x in c])
         cat_map = create_map([lit(x) for c in maps['product_category_mapping'].items() for x in c])
 
-        df = df.fillna({'ProductName':'Unknown Product','ProductCategory':'Unknown Category','WarehouseName':'Unknown Warehouse'}).withColumn("OrderDetailStatus", coalesce(status_map[col("OrderDetailStatus")], col("OrderDetailStatus"))).withColumn("ProductCategory", coalesce(cat_map[col("ProductCategory")], col("ProductCategory")))
+        df = df.fillna({'ProductName':'Unknown Product','ProductCategory':'Unknown Category','WarehouseName':'Unknown Warehouse'}).withColumn("OrderDetailStatus", coalesce(status_map[col("Status")], col("Status"))).withColumn("ProductCategory", coalesce(cat_map[col("ProductCategory")], col("ProductCategory")))
         df = df.withColumn("LineTotal", col("Quantity")*col("UnitPrice")).withColumn("DiscountAmount", col("LineTotal")*col("Discount")/100).withColumn("NetAmount", col("LineTotal")-col("DiscountAmount"))
         df = df.withColumn("PriceCategory", when(col("UnitPrice")>=1000,"Premium").when(col("UnitPrice")>=500,"High").otherwise("Medium")).withColumn("IsHighValue", when(col("NetAmount")>=10000,True).otherwise(False))
         win = Window.partitionBy("WarehouseName")
