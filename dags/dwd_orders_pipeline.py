@@ -154,7 +154,7 @@ def run_dwd_orders_etl(**context):
         order_status_map = create_map([lit(x) for c in map_config.get('order_status_mapping', {}).items() for x in c])
         payment_status_map = create_map([lit(x) for c in map_config.get('payment_status_mapping', {}).items() for x in c])
 
-        df = df.withColumn("OrderStatus", coalesce(order_status_map[col("OrderStatus")], col("OrderStatus")))
+        df = df.withColumn("OrderStatus", coalesce(order_status_map[col("Status")], col("Status")))
         df = df.withColumn("PaymentStatus", coalesce(payment_status_map[col("PaymentStatus")], col("PaymentStatus")))
 
         df = df.withColumn("LeadTimeDays", datediff(col("RequiredDate"), col("OrderDate"))) \
