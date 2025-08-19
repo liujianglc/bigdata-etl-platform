@@ -79,6 +79,7 @@ def run_dwd_orders_etl(**context):
         col, when, datediff, year, month, dayofmonth, dayofweek, quarter, coalesce, lit, 
         min, max, current_timestamp, create_map, avg, sum as spark_sum, count as spark_count
     )
+    from pyspark.sql.types import DecimalType
 
     spark = None
     try:
@@ -94,6 +95,9 @@ def run_dwd_orders_etl(**context):
             .config("spark.executor.memory", os.getenv('SPARK_EXECUTOR_MEMORY', '4g')) \
             .config("spark.sql.adaptive.enabled", "true") \
             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+            .config("spark.sql.parquet.enableVectorizedReader", "false") \
+            .config("spark.sql.hive.convertMetastoreParquet", "false") \
+            .config("spark.sql.parquet.mergeSchema", "true") \
             .enableHiveSupport() \
             .getOrCreate()
         logging.info("✅ Spark session created successfully.")
@@ -157,6 +161,10 @@ def run_dwd_orders_etl(**context):
         df = df.withColumn("OrderStatus", coalesce(order_status_map[col("Status")], col("Status")))
         df = df.withColumn("PaymentStatus", coalesce(payment_status_map[col("PaymentStatus")], col("PaymentStatus")))
 
+        # Cast decimal columns to avoid precision issues
+        df = df.withColumn("TotalAmount", col("TotalAmount").cast("decimal(20,2)")) \
+               .withColumn("Discount", col("Discount").cast("decimal(20,2)"))
+
         df = df.withColumn("LeadTimeDays", datediff(col("RequiredDate"), col("OrderDate"))) \
                .withColumn("ProcessingDays", datediff(col("ShippedDate"), col("CreatedDate"))) \
                .withColumn("IsDelayed", col("ShippedDate") > col("RequiredDate")) \
@@ -172,7 +180,7 @@ def run_dwd_orders_etl(**context):
                .withColumn("OrderDay", dayofmonth(col("OrderDate"))) \
                .withColumn("OrderDayOfWeek", dayofweek(col("OrderDate"))) \
                .withColumn("OrderQuarter", quarter(col("OrderDate"))) \
-               .withColumn("NetAmount", col("TotalAmount") - col("Discount")) \
+               .withColumn("NetAmount", (col("TotalAmount") - col("Discount")).cast("decimal(20,2)")) \
                .withColumn("OrderSizeCategory",
                          when(col("TotalAmount") >= 10000, "Large")
                          .when(col("TotalAmount") >= 5000, "Medium")
@@ -221,8 +229,71 @@ def run_dwd_orders_etl(**context):
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
         spark.sql("CREATE DATABASE IF NOT EXISTS dwd_db")
         
+        # Cast all columns to ensure consistent data types
+        df = df.withColumn("OrderID", col("OrderID").cast("string")) \
+               .withColumn("CustomerID", col("CustomerID").cast("string")) \
+               .withColumn("EmployeeID", col("EmployeeID").cast("string")) \
+               .withColumn("CreatedBy", col("CreatedBy").cast("string"))
+        
+        # Drop and recreate table to handle schema conflicts
+        try:
+            spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+            logging.info("Dropped existing table to resolve schema conflicts")
+        except Exception as e:
+            logging.warning(f"Could not drop table (may not exist): {e}")
+        
+        # Create table with explicit schema
+        create_table_sql = f"""
+        CREATE TABLE {table_name} (
+            OrderID string,
+            CustomerID string,
+            EmployeeID string,
+            OrderDate date,
+            RequiredDate date,
+            ShippedDate date,
+            Status string,
+            TotalAmount decimal(20,2),
+            Discount decimal(20,2),
+            PaymentStatus string,
+            ShippingAddress string,
+            CreatedDate timestamp,
+            CreatedBy string,
+            Remarks string,
+            CustomerName string,
+            CustomerType string,
+            CreatedByName string,
+            CreatedByDepartment string,
+            OrderStatus string,
+            LeadTimeDays int,
+            ProcessingDays int,
+            IsDelayed boolean,
+            DeliveryStatus string,
+            OrderYear int,
+            OrderMonth int,
+            OrderDay int,
+            OrderDayOfWeek int,
+            OrderQuarter int,
+            NetAmount decimal(20,2),
+            OrderSizeCategory string,
+            OrderPriority string,
+            DataQualityScore int,
+            DataQualityLevel string,
+            etl_created_date timestamp,
+            etl_batch_id string
+        )
+        PARTITIONED BY (dt string)
+        STORED AS PARQUET
+        LOCATION '{location}'
+        """
+        spark.sql(create_table_sql)
+        
+        # Write data with schema enforcement
         df.withColumn('dt', lit(batch_date)) \
-          .write.mode("overwrite").partitionBy("dt").format("parquet").option("path", location).saveAsTable(table_name)
+          .write.mode("overwrite") \
+          .partitionBy("dt") \
+          .format("parquet") \
+          .option("path", location) \
+          .saveAsTable(table_name)
         
         df.unpersist()
         logging.info("✅ Data loaded successfully.")
