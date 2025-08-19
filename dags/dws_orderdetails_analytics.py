@@ -47,6 +47,15 @@ def run_dws_orderdetails_analytics_etl(**context):
         spark.sql("SET hive.exec.dynamic.partition = true")
         spark.sql("SET hive.exec.dynamic.partition.mode = nonstrict")
         spark.sql("SET spark.sql.sources.partitionOverwriteMode = dynamic")
+        
+        # Drop existing tables to ensure schema updates are applied
+        try:
+            spark.sql("DROP TABLE IF EXISTS dws_product_analytics")
+            spark.sql("DROP TABLE IF EXISTS dws_warehouse_analytics")
+            spark.sql("DROP TABLE IF EXISTS dws_orderdetails_daily_summary")
+            logging.info("✅ Dropped existing tables for schema refresh")
+        except Exception as e:
+            logging.warning(f"Could not drop existing tables: {e}")
 
         dwd_df_30d = spark.table("dwd_db.dwd_orderdetails").filter(col("dt").between(start_date_30d, batch_date))
         dwd_df_30d.cache()
@@ -64,8 +73,8 @@ def run_dws_orderdetails_analytics_etl(**context):
                 count("*").alias("total_items"),
                 sum("NetAmount").cast(DecimalType(38, 18)).alias("total_amount"),
                 sum("Quantity").cast(DecimalType(38, 18)).alias("total_quantity"),
-                avg("UnitPrice").cast(DecimalType(18, 4)).alias("avg_unit_price"),
-                avg("Discount").cast(DecimalType(18, 4)).alias("avg_discount"),
+                avg("UnitPrice").cast(DecimalType(38, 22)).alias("avg_unit_price"),
+                avg("Discount").cast(DecimalType(38, 22)).alias("avg_discount"),
                 count(when(col("IsHighValue") == True, 1)).alias("high_value_items"),
                 count(when(col("IsDiscounted") == True, 1)).alias("discounted_items"),
                 count(when(col("OrderDetailStatus") == "Delivered", 1)).alias("delivered_items"),
@@ -73,11 +82,11 @@ def run_dws_orderdetails_analytics_etl(**context):
                 count(when(col("PriceCategory") == "Premium", 1)).alias("premium_items"),
                 max("UnitPrice").cast(DecimalType(38, 18)).alias("max_unit_price"),
                 min("UnitPrice").cast(DecimalType(38, 18)).alias("min_unit_price")
-            ).withColumn("avg_item_value", (col("total_amount") / col("total_items")).cast(DecimalType(18, 4))) \
-             .withColumn("discount_rate", ((col("discounted_items") / col("total_items") * 100)).cast(DecimalType(18, 4))) \
-             .withColumn("high_value_rate", ((col("high_value_items") / col("total_items") * 100)).cast(DecimalType(18, 4))) \
-             .withColumn("delivery_rate", ((col("delivered_items") / col("total_items") * 100)).cast(DecimalType(18, 4))) \
-             .withColumn("cancellation_rate", ((col("cancelled_items") / col("total_items") * 100)).cast(DecimalType(18, 4)))
+            ).withColumn("avg_item_value", (col("total_amount") / col("total_items")).cast(DecimalType(38, 22))) \
+             .withColumn("discount_rate", ((col("discounted_items") / col("total_items") * 100)).cast(DecimalType(38, 22))) \
+             .withColumn("high_value_rate", ((col("high_value_items") / col("total_items") * 100)).cast(DecimalType(38, 22))) \
+             .withColumn("delivery_rate", ((col("delivered_items") / col("total_items") * 100)).cast(DecimalType(38, 22))) \
+             .withColumn("cancellation_rate", ((col("cancelled_items") / col("total_items") * 100)).cast(DecimalType(38, 22)))
             
             daily_summary_with_dt = daily_summary.withColumn("dt", lit(batch_date))
             daily_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orderdetails_daily_summary").saveAsTable("dws_orderdetails_daily_summary")
@@ -94,15 +103,15 @@ def run_dws_orderdetails_analytics_etl(**context):
             count("*").alias("total_orders"),
             sum("Quantity").cast(DecimalType(38, 18)).alias("total_quantity_sold"),
             sum("NetAmount").cast(DecimalType(38, 18)).alias("total_revenue"),
-            avg("UnitPrice").cast(DecimalType(18, 4)).alias("avg_unit_price"),
-            avg("Discount").cast(DecimalType(18, 4)).alias("avg_discount"),
+            avg("UnitPrice").cast(DecimalType(38, 22)).alias("avg_unit_price"),
+            avg("Discount").cast(DecimalType(38, 22)).alias("avg_discount"),
             count(when(col("IsHighValue") == True, 1)).alias("high_value_orders"),
             count(when(col("IsDiscounted") == True, 1)).alias("discounted_orders"),
             count(when(col("OrderDetailStatus") == "Delivered", 1)).alias("delivered_orders"),
             count(when(col("OrderDetailStatus") == "Cancelled", 1)).alias("cancelled_orders")
-        ).withColumn("avg_revenue_per_order", (col("total_revenue") / col("total_orders")).cast(DecimalType(18, 4))) \
-         .withColumn("delivery_rate", (col("delivered_orders") / col("total_orders") * 100).cast(DecimalType(18, 4))) \
-         .withColumn("cancellation_rate", (col("cancelled_orders") / col("total_orders") * 100).cast(DecimalType(18, 4))) \
+        ).withColumn("avg_revenue_per_order", (col("total_revenue") / col("total_orders")).cast(DecimalType(38, 22))) \
+         .withColumn("delivery_rate", (col("delivered_orders") / col("total_orders") * 100).cast(DecimalType(38, 22))) \
+         .withColumn("cancellation_rate", (col("cancelled_orders") / col("total_orders") * 100).cast(DecimalType(38, 22))) \
          .withColumn("product_tier",
                     when(col("total_revenue") >= 100000, "Tier 1")
                     .when(col("total_revenue") >= 50000, "Tier 2")
@@ -119,7 +128,7 @@ def run_dws_orderdetails_analytics_etl(**context):
                      (when(col("total_revenue") >= 100000, 100)
                       .when(col("total_revenue") >= 50000, 80)
                       .when(col("total_revenue") >= 10000, 60)
-                      .otherwise(40) * 0.3)).cast(DecimalType(18, 2)))
+                      .otherwise(40) * 0.3)).cast(DecimalType(38, 22)))
 
         product_analytics_with_dt = product_analytics.withColumn("dt", lit(batch_date))
         product_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_product_analytics").saveAsTable("dws_product_analytics")
@@ -139,11 +148,11 @@ def run_dws_orderdetails_analytics_etl(**context):
             sum("NetAmount").cast(DecimalType(38, 18)).alias("total_value_handled"),
             countDistinct("OrderID").alias("unique_orders"),
             countDistinct("ProductID").alias("unique_products"),
-            avg("UnitPrice").cast(DecimalType(18, 4)).alias("avg_item_price"),
+            avg("UnitPrice").cast(DecimalType(38, 22)).alias("avg_item_price"),
             count(when(col("OrderDetailStatus") == "Delivered", 1)).alias("delivered_items"),
-            avg("WarehouseEfficiency").cast(DecimalType(18, 4)).alias("avg_efficiency_score")
-        ).withColumn("delivery_rate", ((col("delivered_items") / col("total_items_processed") * 100)).cast(DecimalType(18, 4))) \
-         .withColumn("avg_value_per_item", (col("total_value_handled") / col("total_items_processed")).cast(DecimalType(18, 4))) \
+            avg("WarehouseEfficiency").cast(DecimalType(38, 22)).alias("avg_efficiency_score")
+        ).withColumn("delivery_rate", ((col("delivered_items") / col("total_items_processed") * 100)).cast(DecimalType(38, 22))) \
+         .withColumn("avg_value_per_item", (col("total_value_handled") / col("total_items_processed")).cast(DecimalType(38, 22))) \
          .withColumn("warehouse_performance_grade",
                     when(col("delivery_rate") >= 95, "A")
                     .when(col("delivery_rate") >= 90, "B")
