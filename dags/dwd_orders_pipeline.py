@@ -146,7 +146,7 @@ def run_dwd_orders_etl(**context):
         
         df = df.fillna({
             'CustomerName': 'Unknown Customer', 'CustomerType': 'Regular',
-            'ShippingAddress': 'Address Not Provided', 'Remarks': '', 'OrderDiscount': 0,
+            'ShippingAddress': 'Address Not Provided', 'Remarks': '', 'Discount': 0,
             'CreatedByName': 'Unknown Employee', 'CreatedByDepartment': 'Unknown Department'
         })
 
@@ -159,24 +159,25 @@ def run_dwd_orders_etl(**context):
 
         df = df.withColumn("LeadTimeDays", datediff(col("RequiredDate"), col("OrderDate"))) \
               .withColumn("ProcessingDays", datediff(col("ShippedDate"), col("CreatedDate"))) \
-              .withColumn("IsDelayed", col("ShippedDate") > col("RequiredDate")) \
+              .withColumn("IsDelayed", col("ShippedDate") > col("RequiredDate"))) \
               .withColumn("DeliveryStatus",
                          when(col("OrderStatus").isin(["Cancelled"]), "Cancelled")
                          .when(col("OrderStatus").isin(["Delivered"]), "Completed")
                          .when((col("ShippedDate").isNotNull()) & (col("ShippedDate") <= col("RequiredDate")), "OnTime")
                          .when((col("ShippedDate").isNotNull()) & (col("ShippedDate") > col("RequiredDate")), "Late")
                          .when((col("RequiredDate") < lit(batch_date)) & col("ShippedDate").isNull(), "Overdue")
-                         .otherwise("Pending")) \
+                         .otherwise("Pending"))) \
               .withColumn("OrderYear", year(col("OrderDate"))) \
               .withColumn("OrderMonth", month(col("OrderDate"))) \
               .withColumn("OrderDay", dayofmonth(col("OrderDate"))) \
               .withColumn("OrderDayOfWeek", dayofweek(col("OrderDate"))) \
-              .withColumn("OrderQuarter", quarter(col("OrderDate")))               .withColumn("NetAmount", col("TotalAmount") - col("Discount"))
+              .withColumn("OrderQuarter", quarter(col("OrderDate"))) \
+              .withColumn("NetAmount", col("TotalAmount") - col("Discount"))) \
               .withColumn("OrderSizeCategory",
                          when(col("TotalAmount") >= 10000, "Large")
                          .when(col("TotalAmount") >= 5000, "Medium")
                          .when(col("TotalAmount") >= 1000, "Small")
-                         .otherwise("Micro")) \
+                         .otherwise("Micro"))) \
               .withColumn("OrderPriority", 
                          when(col("CustomerType") == 'VIP', 'High')
                          .when(col("TotalAmount") >= 10000, "High")
