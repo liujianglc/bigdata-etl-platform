@@ -16,22 +16,14 @@ default_args = {
 def run_dws_orderdetails_analytics_etl(**context):
     """A single, optimized Spark job for all OrderDetails DWS aggregations."""
     from pyspark.sql import SparkSession
-    from pyspark.sql.functions import col, sum, count, avg, max, min, when, lit, date_format, desc
+    from pyspark.sql.functions import col, sum, count, avg, max, min, when, lit, date_format, desc, countDistinct
+    import logging
+    import os
     from datetime import datetime, timedelta
 
     spark = None
     try:
-        spark = SparkSession.builder \
-            .appName("DWS_OrderDetails_Analytics_ETL") \
-            .master(os.getenv('SPARK_MASTER_URL', 'local[*]')) \
-            .config("spark.sql.catalogImplementation", "hive") \
-            .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
-            .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
-            .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
-            .config("spark.driver.memory", os.getenv('SPARK_DRIVER_MEMORY', '4g')) \
-            .config("spark.executor.memory", os.getenv('SPARK_EXECUTOR_MEMORY', '4g')) \
-            .enableHiveSupport() \
-            .getOrCreate()
+        spark = SparkSession.builder             .appName("DWS_OrderDetails_Analytics_ETL")             .master(os.getenv('SPARK_MASTER_URL', 'local[*]'))             .config("spark.sql.catalogImplementation", "hive")             .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")             .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083")             .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse")             .config("spark.driver.memory", os.getenv('SPARK_DRIVER_MEMORY', '4g'))             .config("spark.executor.memory", os.getenv('SPARK_EXECUTOR_MEMORY', '4g'))             .enableHiveSupport()             .getOrCreate()
         logging.info("✅ Spark session created successfully.")
 
         batch_date = context['ds']
@@ -40,8 +32,6 @@ def run_dws_orderdetails_analytics_etl(**context):
         spark.sql("CREATE DATABASE IF NOT EXISTS dws_db")
         spark.sql("USE dws_db")
 
-        # Read data for the last 30 days once and cache it
-        logging.info(f"Reading data from dwd_db.dwd_orderdetails for period: {start_date_30d} to {batch_date}")
         dwd_df_30d = spark.table("dwd_db.dwd_orderdetails").filter(col("dt").between(start_date_30d, batch_date))
         dwd_df_30d.cache()
 
@@ -59,41 +49,67 @@ def run_dws_orderdetails_analytics_etl(**context):
                 sum("NetAmount").alias("total_amount"),
                 sum("Quantity").alias("total_quantity"),
                 avg("UnitPrice").alias("avg_unit_price"),
-                count(when(col("IsHighValue") == True, 1)).alias("high_value_items")
-            )
-            daily_summary.withColumn("dt", lit(batch_date)) \
-                .write.mode("overwrite").partitionBy("dt").format("parquet") \
-                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orderdetails_daily_summary") \
-                .saveAsTable("dws_orderdetails_daily_summary")
+                avg("Discount").alias("avg_discount"),
+                count(when(col("IsHighValue") == True, 1)).alias("high_value_items"),
+                count(when(col("IsDiscounted") == True, 1)).alias("discounted_items"),
+                count(when(col("OrderDetailStatus") == "Delivered", 1)).alias("delivered_items"),
+                count(when(col("OrderDetailStatus") == "Cancelled", 1)).alias("cancelled_items"),
+                count(when(col("PriceCategory") == "Premium", 1)).alias("premium_items"),
+                max("UnitPrice").alias("max_unit_price"),
+                min("UnitPrice").alias("min_unit_price")
+            ).withColumn("avg_item_value", col("total_amount") / col("total_items"))              .withColumn("discount_rate", (col("discounted_items") / col("total_items") * 100))              .withColumn("high_value_rate", (col("high_value_items") / col("total_items") * 100))              .withColumn("delivery_rate", (col("delivered_items") / col("total_items") * 100))              .withColumn("cancellation_rate", (col("cancelled_items") / col("total_items") * 100))
+            
+            daily_summary.withColumn("dt", lit(batch_date)).write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orderdetails_daily_summary").saveAsTable("dws_orderdetails_daily_summary")
             logging.info("✅ Daily aggregation complete and loaded.")
 
         # --- 2. Product Analytics ---
         logging.info("Starting Product Analytics for the last 30 days.")
-        product_analytics = dwd_df_30d.groupBy("ProductID", "ProductName", "ProductCategory").agg(
+        product_analytics = dwd_df_30d.groupBy(
+            col("ProductID").alias("product_id"),
+            col("ProductName").alias("product_name"),
+            col("ProductCategory").alias("product_category"),
+            col("ProductSpecification").alias("product_specification")
+        ).agg(
             count("*").alias("total_orders"),
             sum("Quantity").alias("total_quantity_sold"),
             sum("NetAmount").alias("total_revenue"),
             avg("UnitPrice").alias("avg_unit_price"),
-            count(when(col("IsHighValue") == True, 1)).alias("high_value_orders")
-        ).withColumn("product_tier", when(col("total_revenue") >= 100000, "Tier 1").when(col("total_revenue") >= 50000, "Tier 2").otherwise("Tier 3"))
-        product_analytics.withColumn("dt", lit(batch_date)) \
-            .write.mode("overwrite").partitionBy("dt").format("parquet") \
-            .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_product_analytics") \
-            .saveAsTable("dws_product_analytics")
+            avg("Discount").alias("avg_discount"),
+            count(when(col("IsHighValue") == True, 1)).alias("high_value_orders"),
+            count(when(col("IsDiscounted") == True, 1)).alias("discounted_orders")
+        ).withColumn("avg_revenue_per_order", col("total_revenue") / col("total_orders"))              .withColumn("product_tier",
+                    when(col("total_revenue") >= 100000, "Tier 1")
+                    .when(col("total_revenue") >= 50000, "Tier 2")
+                    .when(col("total_revenue") >= 10000, "Tier 3")
+                    .otherwise("Tier 4"))
+
+        product_analytics.withColumn("dt", lit(batch_date)).write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_product_analytics").saveAsTable("dws_product_analytics")
         logging.info("✅ Product analytics complete and loaded.")
 
         # --- 3. Warehouse Analytics ---
         logging.info("Starting Warehouse Analytics for the last 30 days.")
-        warehouse_analytics = dwd_df_30d.groupBy("WarehouseID", "WarehouseName", "FactoryName").agg(
+        warehouse_analytics = dwd_df_30d.groupBy(
+            col("WarehouseID").alias("warehouse_id"),
+            col("WarehouseName").alias("warehouse_name"),
+            col("WarehouseManager").alias("warehouse_manager"),
+            col("FactoryName").alias("factory_name"),
+            col("FactoryLocation").alias("factory_location")
+        ).agg(
             count("*").alias("total_items_processed"),
             sum("Quantity").alias("total_quantity_handled"),
             sum("NetAmount").alias("total_value_handled"),
+            countDistinct("OrderID").alias("unique_orders"),
+            countDistinct("ProductID").alias("unique_products"),
+            avg("UnitPrice").alias("avg_item_price"),
+            count(when(col("OrderDetailStatus") == "Delivered", 1)).alias("delivered_items"),
             avg("WarehouseEfficiency").alias("avg_efficiency_score")
-        ).withColumn("warehouse_performance_grade", when(col("avg_efficiency_score") >= 95, "A").when(col("avg_efficiency_score") >= 90, "B").otherwise("C"))
-        warehouse_analytics.withColumn("dt", lit(batch_date)) \
-            .write.mode("overwrite").partitionBy("dt").format("parquet") \
-            .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_warehouse_analytics") \
-            .saveAsTable("dws_warehouse_analytics")
+        ).withColumn("delivery_rate", (col("delivered_items") / col("total_items_processed") * 100))              .withColumn("avg_value_per_item", col("total_value_handled") / col("total_items_processed"))              .withColumn("warehouse_performance_grade",
+                    when(col("delivery_rate") >= 95, "A")
+                    .when(col("delivery_rate") >= 90, "B")
+                    .when(col("delivery_rate") >= 80, "C")
+                    .otherwise("D"))
+
+        warehouse_analytics.withColumn("dt", lit(batch_date)).write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_warehouse_analytics").saveAsTable("dws_warehouse_analytics")
         logging.info("✅ Warehouse analytics complete and loaded.")
 
         dwd_df_30d.unpersist()
@@ -101,7 +117,7 @@ def run_dws_orderdetails_analytics_etl(**context):
         context['task_instance'].xcom_push(key='tables_created', value=['dws_orderdetails_daily_summary', 'dws_product_analytics', 'dws_warehouse_analytics'])
 
     except Exception as e:
-        logging.error(f"DWS Orderdetails Analytics ETL failed: {e}", exc_info=True)
+        logging.error(f"DWS OrderDetails Analytics ETL failed: {e}", exc_info=True)
         raise
     finally:
         if spark: spark.stop()
