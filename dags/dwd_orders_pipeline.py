@@ -158,8 +158,7 @@ def run_dwd_orders_etl(**context):
         df = df.withColumn("PaymentStatus", coalesce(payment_status_map[col("PaymentStatus")], col("PaymentStatus")))
 
         df = df.withColumn("LeadTimeDays", datediff(col("RequiredDate"), col("OrderDate"))) \
-              .withColumn("ProcessingDays", datediff(col("ShippedDate"), col("CreatedDate"))) \
-              .withColumn("IsDelayed", col("ShippedDate") > col("RequiredDate"))) \
+              .withColumn("ProcessingDays", datediff(col("ShippedDate"), col("CreatedDate")))               .withColumn("IsDelayed", col("ShippedDate") > col("RequiredDate"))
               .withColumn("DeliveryStatus",
                          when(col("OrderStatus").isin(["Cancelled"]), "Cancelled")
                          .when(col("OrderStatus").isin(["Delivered"]), "Completed")
