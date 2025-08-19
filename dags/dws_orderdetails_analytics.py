@@ -24,7 +24,17 @@ def run_dws_orderdetails_analytics_etl(**context):
 
     spark = None
     try:
-        spark = SparkSession.builder             .appName("DWS_OrderDetails_Analytics_ETL")             .master(os.getenv('SPARK_MASTER_URL', 'local[*]'))             .config("spark.sql.catalogImplementation", "hive")             .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")             .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083")             .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse")             .config("spark.driver.memory", os.getenv('SPARK_DRIVER_MEMORY', '4g'))             .config("spark.executor.memory", os.getenv('SPARK_EXECUTOR_MEMORY', '4g'))             .enableHiveSupport()             .getOrCreate()
+        spark = SparkSession.builder \
+            .appName("DWS_OrderDetails_Analytics_ETL") \
+            .master(os.getenv('SPARK_MASTER_URL', 'local[*]')) \
+            .config("spark.sql.catalogImplementation", "hive") \
+            .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
+            .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
+            .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
+            .config("spark.driver.memory", os.getenv('SPARK_DRIVER_MEMORY', '4g')) \
+            .config("spark.executor.memory", os.getenv('SPARK_EXECUTOR_MEMORY', '4g')) \
+            .enableHiveSupport() \
+            .getOrCreate()
         logging.info("✅ Spark session created successfully.")
 
         batch_date = context['ds']
@@ -63,7 +73,11 @@ def run_dws_orderdetails_analytics_etl(**context):
                 count(when(col("PriceCategory") == "Premium", 1)).alias("premium_items"),
                 max("UnitPrice").cast(DecimalType(38, 18)).alias("max_unit_price"),
                 min("UnitPrice").cast(DecimalType(38, 18)).alias("min_unit_price")
-            ).withColumn("avg_item_value", (col("total_amount") / col("total_items")).cast(DecimalType(18, 4)))              .withColumn("discount_rate", ((col("discounted_items") / col("total_items") * 100)).cast(DecimalType(18, 4)))              .withColumn("high_value_rate", ((col("high_value_items") / col("total_items") * 100)).cast(DecimalType(18, 4)))              .withColumn("delivery_rate", ((col("delivered_items") / col("total_items") * 100)).cast(DecimalType(18, 4)))              .withColumn("cancellation_rate", ((col("cancelled_items") / col("total_items") * 100)).cast(DecimalType(18, 4)))
+            ).withColumn("avg_item_value", (col("total_amount") / col("total_items")).cast(DecimalType(18, 4))) \
+             .withColumn("discount_rate", ((col("discounted_items") / col("total_items") * 100)).cast(DecimalType(18, 4))) \
+             .withColumn("high_value_rate", ((col("high_value_items") / col("total_items") * 100)).cast(DecimalType(18, 4))) \
+             .withColumn("delivery_rate", ((col("delivered_items") / col("total_items") * 100)).cast(DecimalType(18, 4))) \
+             .withColumn("cancellation_rate", ((col("cancelled_items") / col("total_items") * 100)).cast(DecimalType(18, 4)))
             
             daily_summary_with_dt = daily_summary.withColumn("dt", lit(batch_date))
             daily_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orderdetails_daily_summary").saveAsTable("dws_orderdetails_daily_summary")
@@ -86,8 +100,9 @@ def run_dws_orderdetails_analytics_etl(**context):
             count(when(col("IsDiscounted") == True, 1)).alias("discounted_orders"),
             count(when(col("OrderDetailStatus") == "Delivered", 1)).alias("delivered_orders"),
             count(when(col("OrderDetailStatus") == "Cancelled", 1)).alias("cancelled_orders")
-        ).withColumn("avg_revenue_per_order", (col("total_revenue") / col("total_orders")).cast(DecimalType(18, 4)))              .withColumn("delivery_rate", (col("delivered_orders") / col("total_orders") * 100).cast(DecimalType(18, 4))) 
-         .withColumn("cancellation_rate", (col("cancelled_orders") / col("total_orders") * 100).cast(DecimalType(18, 4))) 
+        ).withColumn("avg_revenue_per_order", (col("total_revenue") / col("total_orders")).cast(DecimalType(18, 4))) \
+         .withColumn("delivery_rate", (col("delivered_orders") / col("total_orders") * 100).cast(DecimalType(18, 4))) \
+         .withColumn("cancellation_rate", (col("cancelled_orders") / col("total_orders") * 100).cast(DecimalType(18, 4))) \
          .withColumn("product_tier",
                     when(col("total_revenue") >= 100000, "Tier 1")
                     .when(col("total_revenue") >= 50000, "Tier 2")
@@ -115,7 +130,9 @@ def run_dws_orderdetails_analytics_etl(**context):
             avg("UnitPrice").cast(DecimalType(18, 4)).alias("avg_item_price"),
             count(when(col("OrderDetailStatus") == "Delivered", 1)).alias("delivered_items"),
             avg("WarehouseEfficiency").cast(DecimalType(18, 4)).alias("avg_efficiency_score")
-        ).withColumn("delivery_rate", ((col("delivered_items") / col("total_items_processed") * 100)).cast(DecimalType(18, 4)))              .withColumn("avg_value_per_item", (col("total_value_handled") / col("total_items_processed")).cast(DecimalType(18, 4)))              .withColumn("warehouse_performance_grade",
+        ).withColumn("delivery_rate", ((col("delivered_items") / col("total_items_processed") * 100)).cast(DecimalType(18, 4))) \
+         .withColumn("avg_value_per_item", (col("total_value_handled") / col("total_items_processed")).cast(DecimalType(18, 4))) \
+         .withColumn("warehouse_performance_grade",
                     when(col("delivery_rate") >= 95, "A")
                     .when(col("delivery_rate") >= 90, "B")
                     .when(col("delivery_rate") >= 80, "C")
