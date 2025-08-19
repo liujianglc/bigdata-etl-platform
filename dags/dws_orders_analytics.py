@@ -15,7 +15,8 @@ def run_dws_orders_analytics_etl(**context):
     """A single, optimized Spark job for all Orders DWS aggregations."""
     from pyspark.sql import SparkSession
     from pyspark.sql.functions import col, sum, count, avg, max, min, when, lit, date_format, year, month, datediff, desc
-    from pyspark.sql.types import DecimalType
+    from pyspark.sql.types import DecimalType, DoubleType
+    from config.data_types_config import AMOUNT, AVERAGE, RATE, DAYS
     import logging
     import os
     from datetime import datetime, timedelta
@@ -70,23 +71,23 @@ def run_dws_orders_analytics_etl(**context):
         if not daily_df.rdd.isEmpty():
             daily_summary = daily_df.groupBy(date_format(col("OrderDate"), "yyyy-MM-dd").alias("order_date")).agg(
                 count("*").alias("total_orders"),
-                sum("TotalAmount").cast(DecimalType(38, 18)).alias("total_amount"),
-                avg("TotalAmount").cast(DecimalType(38, 22)).alias("avg_order_value"),
-                sum("NetAmount").cast(DecimalType(38, 18)).alias("total_net_amount"),
+                sum("TotalAmount").cast(AMOUNT).alias("total_amount"),
+                avg("TotalAmount").cast(AVERAGE).alias("avg_order_value"),
+                sum("NetAmount").cast(AMOUNT).alias("total_net_amount"),
                 count(when(col("OrderStatus") == "Delivered", 1)).alias("completed_orders"),
                 count(when(col("OrderStatus") == "Cancelled", 1)).alias("cancelled_orders"),
                 count(when(col("IsDelayed") == True, 1)).alias("delayed_orders"),
                 count(when(col("OrderPriority") == "High", 1)).alias("high_priority_orders"),
                 count(when(col("CustomerType") == "VIP", 1)).alias("vip_orders"),
-                avg("ProcessingDays").cast(DecimalType(38, 22)).alias("avg_processing_days"),
-                max("TotalAmount").cast(DecimalType(38, 18)).alias("max_order_amount"),
-                min("TotalAmount").cast(DecimalType(38, 18)).alias("min_order_amount"),
+                avg("ProcessingDays").cast(DAYS).alias("avg_processing_days"),
+                max("TotalAmount").cast(AMOUNT).alias("max_order_amount"),
+                min("TotalAmount").cast(AMOUNT).alias("min_order_amount"),
                 count(when(col("DataQualityLevel") == "Good", 1)).alias("good_quality_orders"),
                 count(when(col("DataQualityLevel") == "Poor", 1)).alias("poor_quality_orders")
-            ).withColumn("completion_rate", ((col("completed_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-             .withColumn("cancellation_rate", ((col("cancelled_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-             .withColumn("delay_rate", ((col("delayed_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-             .withColumn("data_quality_score", (((col("good_quality_orders") * 4 + (col("total_orders") - col("good_quality_orders") - col("poor_quality_orders")) * 2) / col("total_orders"))).cast(DecimalType(38, 22)))
+            ).withColumn("completion_rate", ((col("completed_orders") / col("total_orders") * 100)).cast(RATE)) \
+             .withColumn("cancellation_rate", ((col("cancelled_orders") / col("total_orders") * 100)).cast(RATE)) \
+             .withColumn("delay_rate", ((col("delayed_orders") / col("total_orders") * 100)).cast(RATE)) \
+             .withColumn("data_quality_score", (((col("good_quality_orders") * 4 + (col("total_orders") - col("good_quality_orders") - col("poor_quality_orders")) * 2) / col("total_orders"))).cast(RATE))
             
             daily_summary.withColumn("dt", lit(batch_date)) \
                 .write.mode("overwrite").partitionBy("dt").format("parquet") \
@@ -100,28 +101,28 @@ def run_dws_orders_analytics_etl(**context):
         if not monthly_df.rdd.isEmpty():
             monthly_summary = monthly_df.groupBy(date_format(col("OrderDate"), "yyyy-MM").alias("year_month")).agg(
                 count("*").alias("total_orders"),
-                sum("TotalAmount").cast(DecimalType(38, 18)).alias("total_amount"),
-                avg("TotalAmount").cast(DecimalType(38, 22)).alias("avg_order_value"),
-                sum("NetAmount").cast(DecimalType(38, 18)).alias("total_net_amount"),
+                sum("TotalAmount").cast(AMOUNT).alias("total_amount"),
+                avg("TotalAmount").cast(AVERAGE).alias("avg_order_value"),
+                sum("NetAmount").cast(AMOUNT).alias("total_net_amount"),
                 count(when(col("OrderStatus") == "Delivered", 1)).alias("completed_orders"),
                 count(when(col("OrderStatus") == "Cancelled", 1)).alias("cancelled_orders"),
                 count(when(col("IsDelayed") == True, 1)).alias("delayed_orders"),
                 count(when(col("OrderPriority") == "High", 1)).alias("high_priority_orders"),
                 count(when(col("CustomerType") == "VIP", 1)).alias("vip_orders"),
-                avg("ProcessingDays").cast(DecimalType(38, 22)).alias("avg_processing_days"),
-                max("TotalAmount").cast(DecimalType(38, 18)).alias("max_order_amount"),
-                min("TotalAmount").cast(DecimalType(38, 18)).alias("min_order_amount"),
+                avg("ProcessingDays").cast(DAYS).alias("avg_processing_days"),
+                max("TotalAmount").cast(AMOUNT).alias("max_order_amount"),
+                min("TotalAmount").cast(AMOUNT).alias("min_order_amount"),
                 count(when(col("CustomerType") == "VIP", 1)).alias("vip_customer_orders"),
                 count(when(col("CustomerType") == "Regular", 1)).alias("regular_customer_orders"),
                 count(when(col("OrderSizeCategory") == "Large", 1)).alias("large_orders"),
                 count(when(col("OrderSizeCategory") == "Medium", 1)).alias("medium_orders"),
                 count(when(col("OrderSizeCategory") == "Small", 1)).alias("small_orders"),
                 count(when(col("OrderSizeCategory") == "Micro", 1)).alias("micro_orders")
-            ).withColumn("completion_rate", ((col("completed_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-             .withColumn("cancellation_rate", ((col("cancelled_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-             .withColumn("delay_rate", ((col("delayed_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-             .withColumn("vip_ratio", ((col("vip_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-             .withColumn("large_order_ratio", ((col("large_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22)))
+            ).withColumn("completion_rate", ((col("completed_orders") / col("total_orders") * 100)).cast(DoubleType())) \
+             .withColumn("cancellation_rate", ((col("cancelled_orders") / col("total_orders") * 100)).cast(DoubleType())) \
+             .withColumn("delay_rate", ((col("delayed_orders") / col("total_orders") * 100)).cast(DoubleType())) \
+             .withColumn("vip_ratio", ((col("vip_orders") / col("total_orders") * 100)).cast(DoubleType())) \
+             .withColumn("large_order_ratio", ((col("large_orders") / col("total_orders") * 100)).cast(DoubleType()))
 
             monthly_summary.withColumn("dt", lit(batch_date)) \
                 .write.mode("overwrite").partitionBy("dt").format("parquet") \
@@ -133,25 +134,25 @@ def run_dws_orders_analytics_etl(**context):
         logging.info(f"Starting Customer Analytics for the last 30 days.")
         customer_analytics = dwd_df_30d.groupBy("CustomerID", "CustomerName", "CustomerType").agg(
             count("*").alias("total_orders"),
-            sum("TotalAmount").cast(DecimalType(38, 18)).alias("total_spent"),
-            avg("TotalAmount").cast(DecimalType(38, 22)).alias("avg_order_value"),
-            sum("NetAmount").cast(DecimalType(38, 18)).alias("total_net_spent"),
+            sum("TotalAmount").cast(AMOUNT).alias("total_spent"),
+            avg("TotalAmount").cast(AVERAGE).alias("avg_order_value"),
+            sum("NetAmount").cast(AMOUNT).alias("total_net_spent"),
             max("OrderDate").alias("last_order_date"),
             min("OrderDate").alias("first_order_date"),
             count(when(col("OrderStatus") == "Delivered", 1)).alias("completed_orders"),
             count(when(col("OrderStatus") == "Cancelled", 1)).alias("cancelled_orders"),
             count(when(col("IsDelayed") == True, 1)).alias("delayed_orders"),
             count(when(col("OrderPriority") == "High", 1)).alias("high_priority_orders"),
-            avg("ProcessingDays").cast(DecimalType(38, 22)).alias("avg_processing_days"),
-            max("TotalAmount").cast(DecimalType(38, 18)).alias("max_order_amount"),
+            avg("ProcessingDays").cast(DAYS).alias("avg_processing_days"),
+            max("TotalAmount").cast(AMOUNT).alias("max_order_amount"),
             count(when(col("OrderSizeCategory") == "Large", 1)).alias("large_orders"),
             count(when(col("DataQualityLevel") == "Poor", 1)).alias("poor_quality_orders")
-        ).withColumn("completion_rate", ((col("completed_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-         .withColumn("cancellation_rate", ((col("cancelled_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
-         .withColumn("delay_rate", ((col("delayed_orders") / col("total_orders") * 100)).cast(DecimalType(38, 22))) \
+        ).withColumn("completion_rate", ((col("completed_orders") / col("total_orders") * 100)).cast(RATE)) \
+         .withColumn("cancellation_rate", ((col("cancelled_orders") / col("total_orders") * 100)).cast(RATE)) \
+         .withColumn("delay_rate", ((col("delayed_orders") / col("total_orders") * 100)).cast(RATE)) \
          .withColumn("days_since_last_order", datediff(lit(batch_date), col("last_order_date"))) \
          .withColumn("customer_lifetime_days", datediff(col("last_order_date"), col("first_order_date")) + 1) \
-         .withColumn("order_frequency", (col("total_orders") / (col("customer_lifetime_days") / 30.0)).cast(DecimalType(38, 22))) \
+         .withColumn("order_frequency", (col("total_orders") / (col("customer_lifetime_days") / 30.0)).cast(FREQUENCY)) \
          .withColumn("customer_segment",
                     when(col("total_spent") >= 50000, "Platinum")
                     .when(col("total_spent") >= 20000, "Gold")
@@ -196,7 +197,7 @@ def create_analytics_views(**context):
         views_sql = [
             "CREATE OR REPLACE VIEW dws_orders_weekly_trend AS SELECT order_date, total_orders, total_amount FROM dws_orders_daily_summary WHERE order_date >= date_sub(current_date(), 7) ORDER BY order_date DESC",
             "CREATE OR REPLACE VIEW dws_orders_monthly_trend AS SELECT year_month, total_orders, total_amount, avg_order_value FROM dws_orders_monthly_summary ORDER BY year_month DESC",
-            "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT CustomerID, CustomerName, total_spent, total_orders, last_order_date, customer_segment FROM dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
+            "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT customer_id, customer_name, total_spent, total_orders, last_order_date, customer_segment FROM dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
         ]
         
         for view_sql in views_sql:
