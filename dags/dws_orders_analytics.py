@@ -197,7 +197,7 @@ def create_analytics_views(**context):
         views_sql = [
             "CREATE OR REPLACE VIEW dws_orders_weekly_trend AS SELECT order_date, total_orders, total_amount FROM dws_orders_daily_summary WHERE order_date >= date_sub(current_date(), 7) ORDER BY order_date DESC",
             "CREATE OR REPLACE VIEW dws_orders_monthly_trend AS SELECT year_month, total_orders, total_amount, avg_order_value FROM dws_orders_monthly_summary ORDER BY year_month DESC",
-            "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT customer_id, customer_name, total_spent, total_orders, last_order_date, customer_segment FROM dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
+            "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT CustomerID, CustomerName, total_spent, total_orders, last_order_date, customer_segment FROM dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
         ]
         
         for view_sql in views_sql:

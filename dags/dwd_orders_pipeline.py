@@ -250,15 +250,45 @@ def create_orders_hive_views(**context):
         spark = SparkSession.builder.appName("CreateDWDOrderViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
         
-        views_sql = [
-            "CREATE OR REPLACE VIEW dwd_orders_active AS SELECT * FROM dwd_orders WHERE OrderStatus IN ('Pending', 'Confirmed', 'Shipping', 'Shipped')",
-            "CREATE OR REPLACE VIEW dwd_orders_delayed AS SELECT * FROM dwd_orders WHERE IsDelayed = true",
-            "CREATE OR REPLACE VIEW dwd_orders_high_value AS SELECT * FROM dwd_orders WHERE OrderPriority = 'High' AND TotalAmount >= 10000",
+        views_sql =  [
+            # 1. 当前活跃订单视图
+            """
+            CREATE OR REPLACE VIEW dwd_orders_active AS
+            SELECT *
+            FROM dwd_orders
+            WHERE OrderStatus IN ('Pending', 'Confirmed', 'Shipping', 'Shipped')
+              AND DataQualityLevel IN ('Good', 'Excellent')
+            """,
+            
+            # 2. 延期订单视图  
+            """
+            CREATE OR REPLACE VIEW dwd_orders_delayed AS
+            SELECT *
+            FROM dwd_orders
+            WHERE IsDelayed = true
+              AND OrderStatus NOT IN ('Cancelled', 'Delivered')
+            """,
+            
+            # 3. 各状态订单统计视图
             """
             CREATE OR REPLACE VIEW dwd_orders_status_summary AS
-            SELECT OrderStatus, COUNT(*) as order_count, SUM(TotalAmount) as total_amount,
-                   AVG(TotalAmount) as avg_amount, COUNT(CASE WHEN IsDelayed = true THEN 1 END) as delayed_count
-            FROM dwd_orders GROUP BY OrderStatus
+            SELECT 
+                OrderStatus,
+                COUNT(*) as order_count,
+                SUM(TotalAmount) as total_amount,
+                AVG(TotalAmount) as avg_amount,
+                COUNT(CASE WHEN IsDelayed = true THEN 1 END) as delayed_count
+            FROM dwd_orders
+            GROUP BY OrderStatus
+            """,
+            
+            # 4. 高价值订单视图
+            """
+            CREATE OR REPLACE VIEW dwd_orders_high_value AS
+            SELECT *
+            FROM dwd_orders
+            WHERE OrderPriority = 'High'
+              AND TotalAmount >= 10000
             """
         ]
         

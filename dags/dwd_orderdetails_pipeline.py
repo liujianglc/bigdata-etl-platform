@@ -193,9 +193,53 @@ def create_orderdetails_hive_views(**context):
         spark = SparkSession.builder.appName("CreateDWDViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
         views = [
-            "CREATE OR REPLACE VIEW dwd_orderdetails_high_value AS SELECT * FROM dwd_orderdetails WHERE IsHighValue = true", 
-            "CREATE OR REPLACE VIEW dwd_orderdetails_product_summary AS SELECT ProductID, ProductName, ProductCategory, COUNT(*) as order_count, SUM(Quantity) as total_quantity, SUM(NetAmount) as total_amount FROM dwd_orderdetails GROUP BY ProductID, ProductName, ProductCategory",
-            "CREATE OR REPLACE VIEW dwd_orderdetails_discounted AS SELECT * FROM dwd_orderdetails WHERE IsDiscounted = true AND Discount > 0"
+            # 1. 高价值订单明细视图
+            """
+            CREATE OR REPLACE VIEW dwd_orderdetails_high_value AS
+            SELECT *
+            FROM dwd_orderdetails
+            WHERE IsHighValue = true
+              AND DataQualityLevel IN ('Good', 'Excellent')
+            """,
+            
+            # 2. 折扣商品视图
+            """
+            CREATE OR REPLACE VIEW dwd_orderdetails_discounted AS
+            SELECT *
+            FROM dwd_orderdetails
+            WHERE IsDiscounted = true
+              AND Discount > 0
+            """,
+            
+            # 3. 产品销售统计视图
+            """
+            CREATE OR REPLACE VIEW dwd_orderdetails_product_summary AS
+            SELECT 
+                ProductID,
+                ProductName,
+                ProductCategory,
+                COUNT(*) as order_count,
+                SUM(Quantity) as total_quantity,
+                SUM(NetAmount) as total_amount,
+                AVG(UnitPrice) as avg_unit_price,
+                AVG(Discount) as avg_discount
+            FROM dwd_orderdetails
+            GROUP BY ProductID, ProductName, ProductCategory
+            """,
+            
+            # 4. 仓库效率视图
+            """
+            CREATE OR REPLACE VIEW dwd_orderdetails_warehouse_performance AS
+            SELECT 
+                WarehouseID,
+                WarehouseName,
+                FactoryName,
+                COUNT(*) as total_items,
+                SUM(CASE WHEN OrderDetailStatus = 'Delivered' THEN 1 ELSE 0 END) as delivered_items,
+                AVG(WarehouseEfficiency) as efficiency_score
+            FROM dwd_orderdetails
+            GROUP BY WarehouseID, WarehouseName, FactoryName
+            """
         ]
         for v in views: spark.sql(v)
         logging.info(f"✅ Successfully created {len(views)} views.")
