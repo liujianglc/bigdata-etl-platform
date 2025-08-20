@@ -260,9 +260,9 @@ def create_spark():
             .config("spark.sql.catalogImplementation", "hive") \
             .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
             .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
-            .config("spark.driver.memory", "512m") \
-            .config("spark.driver.maxResultSize", "256m") \
-            .config("spark.executor.memory", "512m") \
+            .config("spark.driver.memory", "2g") \
+            .config("spark.driver.maxResultSize", "2g") \
+            .config("spark.executor.memory", "2g") \
             .config("spark.executor.cores", "1") \
             .config("spark.driver.cores", "1") \
             .config("spark.network.timeout", "300s") \
