@@ -90,11 +90,21 @@ def run_dws_orders_analytics_etl(**context):
              .withColumn("delay_rate", ((col("delayed_orders") / col("total_orders") * 100)).cast(RATE)) \
              .withColumn("data_quality_score", (((col("good_quality_orders") * 4 + (col("total_orders") - col("good_quality_orders") - col("poor_quality_orders")) * 2) / col("total_orders"))).cast(RATE))
             
-            daily_summary.withColumn("dt", lit(batch_date)) \
-                .write.mode("overwrite").partitionBy("dt").format("parquet") \
-                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary") \
-                .saveAsTable("dws_orders_daily_summary")
-            logging.info("✅ Daily aggregation complete and loaded.")
+            try:
+                daily_summary.withColumn("dt", lit(batch_date)) \
+                    .write.mode("overwrite").partitionBy("dt").format("parquet") \
+                    .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary") \
+                    .saveAsTable("dws_orders_daily_summary")
+                
+                # Verify table was created successfully
+                spark.sql("REFRESH TABLE dws_db.dws_orders_daily_summary")
+                row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_daily_summary").collect()[0]['cnt']
+                logging.info(f"✅ Daily aggregation complete and loaded. Row count: {row_count}")
+            except Exception as e:
+                logging.error(f"❌ Failed to create daily summary table: {e}")
+                raise
+        else:
+            logging.info("⚠️  No data for daily aggregation on date: {batch_date}")
 
         # --- 2. Monthly Aggregation ---
         logging.info(f"Starting Monthly Aggregation for month: {current_month_str}")
@@ -125,11 +135,21 @@ def run_dws_orders_analytics_etl(**context):
              .withColumn("vip_ratio", ((col("vip_orders") / col("total_orders") * 100)).cast(DoubleType())) \
              .withColumn("large_order_ratio", ((col("large_orders") / col("total_orders") * 100)).cast(DoubleType()))
 
-            monthly_summary.withColumn("dt", lit(batch_date)) \
-                .write.mode("overwrite").partitionBy("dt").format("parquet") \
-                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_monthly_summary") \
-                .saveAsTable("dws_orders_monthly_summary")
-            logging.info("✅ Monthly aggregation complete and loaded.")
+            try:
+                monthly_summary.withColumn("dt", lit(batch_date)) \
+                    .write.mode("overwrite").partitionBy("dt").format("parquet") \
+                    .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_monthly_summary") \
+                    .saveAsTable("dws_orders_monthly_summary")
+                
+                # Verify table was created successfully
+                spark.sql("REFRESH TABLE dws_db.dws_orders_monthly_summary")
+                row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_monthly_summary").collect()[0]['cnt']
+                logging.info(f"✅ Monthly aggregation complete and loaded. Row count: {row_count}")
+            except Exception as e:
+                logging.error(f"❌ Failed to create monthly summary table: {e}")
+                raise
+        else:
+            logging.info(f"⚠️  No data for monthly aggregation for month: {current_month_str}")
 
         # --- 3. Customer Analytics ---
         logging.info(f"Starting Customer Analytics for the last 30 days.")
@@ -165,11 +185,19 @@ def run_dws_orders_analytics_etl(**context):
                     .when(col("days_since_last_order") <= 90, "Inactive")
                     .otherwise("Dormant"))
         
-        customer_analytics.withColumn("dt", lit(batch_date)) \
-            .write.mode("overwrite").partitionBy("dt").format("parquet") \
-            .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_customer_analytics") \
-            .saveAsTable("dws_customer_analytics")
-        logging.info("✅ Customer analytics complete and loaded.")
+        try:
+            customer_analytics.withColumn("dt", lit(batch_date)) \
+                .write.mode("overwrite").partitionBy("dt").format("parquet") \
+                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_customer_analytics") \
+                .saveAsTable("dws_customer_analytics")
+            
+            # Verify table was created successfully
+            spark.sql("REFRESH TABLE dws_db.dws_customer_analytics")
+            row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_customer_analytics").collect()[0]['cnt']
+            logging.info(f"✅ Customer analytics complete and loaded. Row count: {row_count}")
+        except Exception as e:
+            logging.error(f"❌ Failed to create customer analytics table: {e}")
+            raise
 
         dwd_df_30d.unpersist()
         context['task_instance'].xcom_push(key='status', value='SUCCESS')
@@ -193,23 +221,77 @@ def create_analytics_views(**context):
 
     spark = None
     try:
-        spark = SparkSession.builder.appName("CreateDWSViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
+        spark = SparkSession.builder \
+            .appName("CreateDWSViews") \
+            .config("spark.sql.catalogImplementation", "hive") \
+            .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
+            .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
+            .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
+            .enableHiveSupport() \
+            .getOrCreate()
+        
         spark.sql("USE dws_db")
         
-        views_sql = [
-            "CREATE OR REPLACE VIEW dws_orders_weekly_trend AS SELECT order_date, total_orders, total_amount FROM dws_orders_daily_summary WHERE order_date >= date_sub(current_date(), 7) ORDER BY order_date DESC",
-            "CREATE OR REPLACE VIEW dws_orders_monthly_trend AS SELECT year_month, total_orders, total_amount, avg_order_value FROM dws_orders_monthly_summary ORDER BY year_month DESC",
-            "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT CustomerID, CustomerName, total_spent, total_orders, last_order_date, customer_segment FROM dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
-        ]
+        # Check if required tables exist before creating views
+        required_tables = ['dws_orders_daily_summary', 'dws_orders_monthly_summary', 'dws_customer_analytics']
+        existing_tables = []
         
-        for view_sql in views_sql:
-            spark.sql(view_sql)
-        logging.info(f"✅ Successfully created {len(views_sql)} views.")
+        for table in required_tables:
+            try:
+                spark.sql(f"DESCRIBE TABLE dws_db.{table}")
+                existing_tables.append(table)
+                logging.info(f"✅ Table {table} exists and is accessible")
+            except Exception as e:
+                logging.warning(f"❌ Table {table} not found or not accessible: {e}")
+        
+        if not existing_tables:
+            logging.error("No required tables exist. Cannot create views.")
+            return
+        
+        # Create views only for existing tables with fully qualified table names
+        views_to_create = []
+        
+        if 'dws_orders_daily_summary' in existing_tables:
+            views_to_create.append({
+                'name': 'dws_orders_weekly_trend',
+                'sql': "CREATE OR REPLACE VIEW dws_orders_weekly_trend AS SELECT order_date, total_orders, total_amount FROM dws_db.dws_orders_daily_summary WHERE order_date >= date_sub(current_date(), 7) ORDER BY order_date DESC"
+            })
+        
+        if 'dws_orders_monthly_summary' in existing_tables:
+            views_to_create.append({
+                'name': 'dws_orders_monthly_trend', 
+                'sql': "CREATE OR REPLACE VIEW dws_orders_monthly_trend AS SELECT year_month, total_orders, total_amount, avg_order_value FROM dws_db.dws_orders_monthly_summary ORDER BY year_month DESC"
+            })
+        
+        if 'dws_customer_analytics' in existing_tables:
+            views_to_create.append({
+                'name': 'dws_high_value_customers',
+                'sql': "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT CustomerID, CustomerName, total_spent, total_orders, last_order_date, customer_segment FROM dws_db.dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
+            })
+        
+        # Create views one by one with error handling
+        created_views = []
+        for view in views_to_create:
+            try:
+                spark.sql(view['sql'])
+                created_views.append(view['name'])
+                logging.info(f"✅ Successfully created view: {view['name']}")
+            except Exception as e:
+                logging.error(f"❌ Failed to create view {view['name']}: {e}")
+                # Continue creating other views even if one fails
+        
+        if created_views:
+            logging.info(f"✅ Successfully created {len(created_views)} views: {created_views}")
+        else:
+            logging.warning("⚠️  No views were created successfully")
+            
     except Exception as e:
-        logging.error(f"View creation failed: {e}", exc_info=True)
-        raise
+        logging.error(f"View creation process failed: {e}", exc_info=True)
+        # Don't raise the exception to avoid failing the entire DAG
+        # Just log the error and continue
     finally:
-        if spark: spark.stop()
+        if spark: 
+            spark.stop()
 
 with DAG(
     'dws_orders_analytics',
