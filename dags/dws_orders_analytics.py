@@ -248,36 +248,158 @@ def create_analytics_views(**context):
             logging.error("No required tables exist. Cannot create views.")
             return
         
-        # Create views only for existing tables with fully qualified table names
-        views_to_create = []
+        # Create comprehensive views based on existing tables
+        views_sql = []
+        tables_created = existing_tables  # Use existing_tables for consistency
         
-        if 'dws_orders_daily_summary' in existing_tables:
-            views_to_create.append({
-                'name': 'dws_orders_weekly_trend',
-                'sql': "CREATE OR REPLACE VIEW dws_orders_weekly_trend AS SELECT order_date, total_orders, total_amount FROM dws_db.dws_orders_daily_summary WHERE order_date >= date_sub(current_date(), 7) ORDER BY order_date DESC"
-            })
+        # 如果日汇总表存在，创建相关视图
+        if 'dws_orders_daily_summary' in tables_created:
+            views_sql.extend([
+                # 最近7天趋势视图
+                """
+                CREATE OR REPLACE VIEW dws_orders_weekly_trend AS
+                SELECT 
+                    order_date,
+                    total_orders,
+                    total_amount,
+                    completion_rate,
+                    delay_rate,
+                    LAG(total_orders, 1) OVER (ORDER BY order_date) as prev_day_orders,
+                    LAG(total_amount, 1) OVER (ORDER BY order_date) as prev_day_amount
+                FROM dws_db.dws_orders_daily_summary
+                WHERE order_date >= date_sub(current_date(), 7)
+                ORDER BY order_date DESC
+                """,
+                
+                # 日汇总KPI视图
+                """
+                CREATE OR REPLACE VIEW dws_daily_kpi AS
+                SELECT 
+                    order_date,
+                    total_orders,
+                    total_amount,
+                    avg_order_value,
+                    completion_rate,
+                    cancellation_rate,
+                    delay_rate,
+                    CASE 
+                        WHEN completion_rate >= 95 THEN 'Excellent'
+                        WHEN completion_rate >= 90 THEN 'Good'
+                        WHEN completion_rate >= 80 THEN 'Fair'
+                        ELSE 'Poor'
+                    END as performance_grade
+                FROM dws_db.dws_orders_daily_summary
+                """
+            ])
         
-        if 'dws_orders_monthly_summary' in existing_tables:
-            views_to_create.append({
-                'name': 'dws_orders_monthly_trend', 
-                'sql': "CREATE OR REPLACE VIEW dws_orders_monthly_trend AS SELECT year_month, total_orders, total_amount, avg_order_value FROM dws_db.dws_orders_monthly_summary ORDER BY year_month DESC"
-            })
+        # 如果月汇总表存在，创建相关视图
+        if 'dws_orders_monthly_summary' in tables_created:
+            views_sql.extend([
+                # 月度趋势视图
+                """
+                CREATE OR REPLACE VIEW dws_orders_monthly_trend AS
+                SELECT 
+                    year_month,
+                    total_orders,
+                    total_amount,
+                    avg_order_value,
+                    vip_ratio,
+                    large_order_ratio,
+                    completion_rate,
+                    LAG(total_orders, 1) OVER (ORDER BY year_month) as prev_month_orders,
+                    LAG(total_amount, 1) OVER (ORDER BY year_month) as prev_month_amount
+                FROM dws_db.dws_orders_monthly_summary
+                ORDER BY year_month DESC
+                """,
+                
+                # 月度业务指标视图
+                """
+                CREATE OR REPLACE VIEW dws_monthly_business_metrics AS
+                SELECT 
+                    year_month,
+                    total_orders,
+                    total_amount,
+                    vip_orders,
+                    large_orders,
+                    ROUND(vip_ratio, 2) as vip_percentage,
+                    ROUND(large_order_ratio, 2) as large_order_percentage,
+                    ROUND(completion_rate, 2) as completion_percentage,
+                    ROUND(avg_processing_days, 1) as avg_processing_days
+                FROM dws_db.dws_orders_monthly_summary
+                """
+            ])
         
-        if 'dws_customer_analytics' in existing_tables:
-            views_to_create.append({
-                'name': 'dws_high_value_customers',
-                'sql': "CREATE OR REPLACE VIEW dws_high_value_customers AS SELECT CustomerID, CustomerName, total_spent, total_orders, last_order_date, customer_segment FROM dws_db.dws_customer_analytics ORDER BY total_spent DESC LIMIT 100"
-            })
+        # 如果客户分析表存在，创建相关视图
+        if 'dws_customer_analytics' in tables_created:
+            views_sql.extend([
+                # 客户价值分段视图
+                """
+                CREATE OR REPLACE VIEW dws_customer_value_segments AS
+                SELECT 
+                    customer_segment,
+                    COUNT(*) as customer_count,
+                    SUM(total_spent) as segment_revenue,
+                    AVG(total_spent) as avg_customer_value,
+                    AVG(total_orders) as avg_orders_per_customer,
+                    AVG(avg_order_value) as avg_order_value,
+                    SUM(CASE WHEN customer_status = 'Active' THEN 1 ELSE 0 END) as active_customers
+                FROM dws_db.dws_customer_analytics
+                GROUP BY customer_segment
+                ORDER BY 
+                    CASE customer_segment 
+                        WHEN 'Platinum' THEN 1
+                        WHEN 'Gold' THEN 2
+                        WHEN 'Silver' THEN 3
+                        WHEN 'Bronze' THEN 4
+                    END
+                """,
+                
+                # 客户状态分析视图
+                """
+                CREATE OR REPLACE VIEW dws_customer_status_analysis AS
+                SELECT 
+                    customer_status,
+                    COUNT(*) as customer_count,
+                    SUM(total_spent) as status_revenue,
+                    AVG(days_since_last_order) as avg_days_since_last_order,
+                    AVG(order_frequency) as avg_monthly_frequency
+                FROM dws_db.dws_customer_analytics
+                GROUP BY customer_status
+                """,
+                
+                # 高价值客户视图
+                """
+                CREATE OR REPLACE VIEW dws_high_value_customers AS
+                SELECT 
+                    CustomerID,
+                    CustomerName,
+                    CustomerType,
+                    customer_segment,
+                    customer_status,
+                    total_spent,
+                    total_orders,
+                    avg_order_value,
+                    completion_rate,
+                    days_since_last_order,
+                    order_frequency
+                FROM dws_db.dws_customer_analytics
+                WHERE customer_segment IN ('Platinum', 'Gold')
+                   OR total_spent >= 20000
+                ORDER BY total_spent DESC
+                """
+            ])
         
         # Create views one by one with error handling
         created_views = []
-        for view in views_to_create:
+        for i, view_sql in enumerate(views_sql):
             try:
-                spark.sql(view['sql'])
-                created_views.append(view['name'])
-                logging.info(f"✅ Successfully created view: {view['name']}")
+                spark.sql(view_sql.strip())
+                # Extract view name from SQL for logging
+                view_name = view_sql.split('VIEW')[1].split('AS')[0].strip()
+                created_views.append(view_name)
+                logging.info(f"✅ Successfully created view: {view_name}")
             except Exception as e:
-                logging.error(f"❌ Failed to create view {view['name']}: {e}")
+                logging.error(f"❌ Failed to create view #{i+1}: {e}")
                 # Continue creating other views even if one fails
         
         if created_views:
