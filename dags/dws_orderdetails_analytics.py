@@ -187,10 +187,19 @@ def create_analytics_views(**context):
         spark = SparkSession.builder.appName("CreateDWSOrderDetailsViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
         spark.sql("USE dws_db")
         
+        # 获取已创建的表列表
+        tables_created = context['task_instance'].xcom_pull(task_ids='run_dws_orderdetails_analytics_etl', key='tables_created') or []
+        
         # Drop existing views first to avoid conflicts
         drop_views = [
             "DROP VIEW IF EXISTS dws_product_performance",
-            "DROP VIEW IF EXISTS dws_warehouse_performance"
+            "DROP VIEW IF EXISTS dws_warehouse_performance",
+            "DROP VIEW IF EXISTS dws_orderdetails_weekly_trend",
+            "DROP VIEW IF EXISTS dws_orderdetails_daily_kpi",
+            "DROP VIEW IF EXISTS dws_top_performing_products",
+            "DROP VIEW IF EXISTS dws_product_category_analysis",
+            "DROP VIEW IF EXISTS dws_warehouse_performance_ranking",
+            "DROP VIEW IF EXISTS dws_factory_summary"
         ]
         
         for drop_sql in drop_views:
@@ -199,20 +208,154 @@ def create_analytics_views(**context):
             except Exception as e:
                 logging.warning(f"Could not drop view: {e}")
         
+        # 基础视图
         views_sql = [
             "CREATE VIEW dws_product_performance AS SELECT product_name, product_tier, total_revenue, total_quantity_sold, demand_level, product_performance_score FROM dws_product_analytics ORDER BY product_performance_score DESC",
             "CREATE VIEW dws_warehouse_performance AS SELECT warehouse_name, factory_name, total_items_processed, total_value_handled, delivery_rate, avg_efficiency_score, warehouse_performance_grade FROM dws_warehouse_analytics ORDER BY avg_efficiency_score DESC"
         ]
         
+        # 如果日汇总表存在，创建相关视图
+        if 'dws_orderdetails_daily_summary' in tables_created:
+            views_sql.extend([
+                # 最近7天明细趋势视图
+                """
+                CREATE OR REPLACE VIEW dws_orderdetails_weekly_trend AS
+                SELECT 
+                    order_date,
+                    total_items,
+                    total_amount,
+                    total_quantity,
+                    delivery_rate,
+                    discount_rate,
+                    LAG(total_items, 1) OVER (ORDER BY order_date) as prev_day_items,
+                    LAG(total_amount, 1) OVER (ORDER BY order_date) as prev_day_amount
+                FROM dws_orderdetails_daily_summary
+                WHERE order_date >= date_sub(current_date(), 7)
+                ORDER BY order_date DESC
+                """,
+                
+                # 日汇总KPI视图
+                """
+                CREATE OR REPLACE VIEW dws_orderdetails_daily_kpi AS
+                SELECT 
+                    order_date,
+                    total_items,
+                    total_amount,
+                    avg_item_value,
+                    delivery_rate,
+                    cancellation_rate,
+                    discount_rate,
+                    high_value_rate,
+                    CASE 
+                        WHEN delivery_rate >= 95 THEN 'Excellent'
+                        WHEN delivery_rate >= 90 THEN 'Good'
+                        WHEN delivery_rate >= 80 THEN 'Fair'
+                        ELSE 'Poor'
+                    END as performance_grade
+                FROM dws_orderdetails_daily_summary
+                """
+            ])
+        
+        # 如果产品分析表存在，创建相关视图
+        if 'dws_product_analytics' in tables_created:
+            views_sql.extend([
+                # 产品绩效排行视图
+                """
+                CREATE OR REPLACE VIEW dws_top_performing_products AS
+                SELECT 
+                    product_id,
+                    product_name,
+                    product_category,
+                    product_tier,
+                    demand_level,
+                    total_revenue,
+                    total_orders,
+                    avg_revenue_per_order,
+                    delivery_rate,
+                    product_performance_score
+                FROM dws_product_analytics
+                WHERE product_tier IN ('Tier 1', 'Tier 2')
+                ORDER BY product_performance_score DESC
+                """,
+                
+                # 产品类别分析视图
+                """
+                CREATE OR REPLACE VIEW dws_product_category_analysis AS
+                SELECT 
+                    product_category,
+                    COUNT(*) as product_count,
+                    SUM(total_revenue) as category_revenue,
+                    AVG(total_revenue) as avg_product_revenue,
+                    AVG(delivery_rate) as avg_delivery_rate,
+                    AVG(product_performance_score) as avg_performance_score
+                FROM dws_product_analytics
+                GROUP BY product_category
+                ORDER BY category_revenue DESC
+                """
+            ])
+        
+        # 如果仓库分析表存在，创建相关视图
+        if 'dws_warehouse_analytics' in tables_created:
+            views_sql.extend([
+                # 仓库绩效排行视图
+                """
+                CREATE OR REPLACE VIEW dws_warehouse_performance_ranking AS
+                SELECT 
+                    warehouse_id,
+                    warehouse_name,
+                    warehouse_manager,
+                    factory_name,
+                    warehouse_performance_grade,
+                    delivery_rate,
+                    total_items_processed,
+                    total_value_handled,
+                    avg_efficiency_score
+                FROM dws_warehouse_analytics
+                ORDER BY delivery_rate DESC, total_value_handled DESC
+                """,
+                
+                # 工厂级别汇总视图
+                """
+                CREATE OR REPLACE VIEW dws_factory_summary AS
+                SELECT 
+                    factory_name,
+                    factory_location,
+                    COUNT(*) as warehouse_count,
+                    SUM(total_items_processed) as total_items,
+                    SUM(total_value_handled) as total_value,
+                    AVG(delivery_rate) as avg_delivery_rate,
+                    AVG(avg_efficiency_score) as avg_efficiency
+                FROM dws_warehouse_analytics
+                GROUP BY factory_name, factory_location
+                ORDER BY total_value DESC
+                """
+            ])
+        
+        # 创建视图并刷新
         for i, view_sql in enumerate(views_sql):
             try:
                 spark.sql(view_sql)
                 logging.info(f"✅ Successfully created view {i+1}")
+                
+                # 提取视图名称并刷新
+                import re
+                view_match = re.search(r'(?:CREATE|CREATE OR REPLACE)\s+VIEW\s+(\w+)', view_sql, re.IGNORECASE)
+                if view_match:
+                    view_name = view_match.group(1)
+                    try:
+                        spark.sql(f"REFRESH TABLE {view_name}")
+                        logging.info(f"✅ Successfully refreshed view {view_name}")
+                    except Exception as refresh_e:
+                        logging.warning(f"Could not refresh view {view_name}: {refresh_e}")
+                else:
+                    logging.warning(f"Could not extract view name from SQL: {view_sql[:50]}...")
+                    
             except Exception as e:
                 logging.error(f"Failed to create view {i+1}: {view_sql}")
                 logging.error(f"Error: {e}")
                 raise
-        logging.info(f"✅ Successfully created {len(views_sql)} views.")
+                
+        logging.info(f"✅ Successfully created and refreshed {len(views_sql)} views.")
     except Exception as e:
         logging.error(f"View creation failed: {e}", exc_info=True)
         raise
