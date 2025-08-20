@@ -396,6 +396,14 @@ def create_analytics_views(**context):
                 spark.sql(view_sql.strip())
                 # Extract view name from SQL for logging
                 view_name = view_sql.split('VIEW')[1].split('AS')[0].strip()
+                
+                # Refresh the view to ensure metadata is synchronized
+                try:
+                    spark.sql(f"REFRESH TABLE dws_db.{view_name}")
+                    logging.info(f"🔄 Refreshed view metadata: {view_name}")
+                except Exception as refresh_e:
+                    logging.warning(f"⚠️  Could not refresh view {view_name}: {refresh_e}")
+                
                 created_views.append(view_name)
                 logging.info(f"✅ Successfully created view: {view_name}")
             except Exception as e:
@@ -404,6 +412,13 @@ def create_analytics_views(**context):
         
         if created_views:
             logging.info(f"✅ Successfully created {len(created_views)} views: {created_views}")
+            
+            # Final refresh to ensure all metadata is synchronized
+            try:
+                spark.sql("REFRESH")
+                logging.info("🔄 Performed final metadata refresh for all tables and views")
+            except Exception as final_refresh_e:
+                logging.warning(f"⚠️  Could not perform final metadata refresh: {final_refresh_e}")
         else:
             logging.warning("⚠️  No views were created successfully")
             
