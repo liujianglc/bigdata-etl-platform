@@ -232,7 +232,6 @@ def run_dwd_orders_etl(**context):
         # Cast all columns to ensure consistent data types
         df = df.withColumn("OrderID", col("OrderID").cast("string")) \
                .withColumn("CustomerID", col("CustomerID").cast("string")) \
-               .withColumn("EmployeeID", col("EmployeeID").cast("string")) \
                .withColumn("CreatedBy", col("CreatedBy").cast("string"))
         
         # Drop and recreate table to handle schema conflicts
@@ -247,7 +246,6 @@ def run_dwd_orders_etl(**context):
         CREATE TABLE {table_name} (
             OrderID string,
             CustomerID string,
-            EmployeeID string,
             OrderDate date,
             RequiredDate date,
             ShippedDate date,

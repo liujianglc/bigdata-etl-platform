@@ -132,8 +132,10 @@ def run_dwd_orderdetails_etl(**context):
         logging.info(f"Executing dynamically generated query:\n{query}")
         df = spark.sql(query)
         df.cache()
-        
-        if df.rdd.isEmpty():
+        logging.info('Executed query successfully.')
+        # Use limit(1).count() instead of rdd.isEmpty() for better performance
+        record_count = df.limit(1).count()
+        if record_count == 0:
             logging.warning("No records found. Skipping.")
             context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
             return

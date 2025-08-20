@@ -61,7 +61,8 @@ def run_dws_orderdetails_analytics_etl(**context):
         dwd_df_30d = spark.table("dwd_db.dwd_orderdetails").filter(col("dt").between(start_date_30d, batch_date))
         dwd_df_30d.cache()
 
-        if dwd_df_30d.rdd.isEmpty():
+        # Use limit(1).count() instead of rdd.isEmpty() for better performance
+        if dwd_df_30d.limit(1).count() == 0:
             logging.warning("No DWD data for the last 30 days, skipping all aggregations.")
             context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
             return
@@ -69,7 +70,7 @@ def run_dws_orderdetails_analytics_etl(**context):
         # --- 1. Daily Aggregation ---
         logging.info(f"Starting Daily Aggregation for date: {batch_date}")
         daily_df = dwd_df_30d.filter(col("dt") == batch_date)
-        if not daily_df.rdd.isEmpty():
+        if daily_df.limit(1).count() > 0:
             daily_summary = daily_df.groupBy(date_format(col("OrderDate"), "yyyy-MM-dd").alias("order_date")).agg(
                 count("*").alias("total_items"),
                 sum("NetAmount").cast(AMOUNT).alias("total_amount"),

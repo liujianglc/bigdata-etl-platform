@@ -60,7 +60,8 @@ def run_dws_orders_analytics_etl(**context):
         dwd_df_30d = spark.table("dwd_db.dwd_orders").filter(col("dt").between(start_date_30d, batch_date))
         dwd_df_30d.cache()
 
-        if dwd_df_30d.rdd.isEmpty():
+        # Use limit(1).count() instead of rdd.isEmpty() for better performance
+        if dwd_df_30d.limit(1).count() == 0:
             logging.warning("No DWD data for the last 30 days, skipping all aggregations.")
             context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
             return
@@ -68,7 +69,7 @@ def run_dws_orders_analytics_etl(**context):
         # --- 1. Daily Aggregation ---
         logging.info(f"Starting Daily Aggregation for date: {batch_date}")
         daily_df = dwd_df_30d.filter(col("dt") == batch_date)
-        if not daily_df.rdd.isEmpty():
+        if daily_df.limit(1).count() > 0:
             daily_summary = daily_df.groupBy(date_format(col("OrderDate"), "yyyy-MM-dd").alias("order_date")).agg(
                 count("*").alias("total_orders"),
                 sum("TotalAmount").cast(AMOUNT).alias("total_amount"),
@@ -98,7 +99,7 @@ def run_dws_orders_analytics_etl(**context):
         # --- 2. Monthly Aggregation ---
         logging.info(f"Starting Monthly Aggregation for month: {current_month_str}")
         monthly_df = dwd_df_30d.filter(date_format(col("OrderDate"), "yyyy-MM") == current_month_str)
-        if not monthly_df.rdd.isEmpty():
+        if monthly_df.limit(1).count() > 0:
             monthly_summary = monthly_df.groupBy(date_format(col("OrderDate"), "yyyy-MM").alias("year_month")).agg(
                 count("*").alias("total_orders"),
                 sum("TotalAmount").cast(AMOUNT).alias("total_amount"),
@@ -183,12 +184,13 @@ def run_dws_orders_analytics_etl(**context):
 
 def create_analytics_views(**context):
     """Creates DWS analysis views."""
+    from pyspark.sql import SparkSession
+    import logging
+    
     if context['task_instance'].xcom_pull(task_ids='run_dws_analytics_etl_task', key='status') == 'SKIPPED_EMPTY_DATA':
         logging.warning("Skipping view creation as no data was processed.")
         return
 
-    from pyspark.sql import SparkSession
-    import logging
     spark = None
     try:
         spark = SparkSession.builder.appName("CreateDWSViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
