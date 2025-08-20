@@ -57,22 +57,48 @@ def run_dws_orders_analytics_etl(**context):
         except Exception as e:
             logging.warning(f"Could not drop existing tables: {e}")
 
+        # 检查源表是否存在
+        try:
+            spark.sql("DESCRIBE TABLE dwd_db.dwd_orders")
+            logging.info("✅ Source table dwd_db.dwd_orders exists")
+        except Exception as e:
+            logging.error(f"❌ Source table dwd_db.dwd_orders not found: {e}")
+            context['task_instance'].xcom_push(key='status', value='SKIPPED_NO_SOURCE_TABLE')
+            return
+        
         dwd_df_30d = spark.table("dwd_db.dwd_orders").filter(col("dt").between(start_date_30d, batch_date))
         dwd_df_30d.cache()
-
-        # Use limit(1).count() instead of rdd.isEmpty() for better performance
-        if dwd_df_30d.limit(1).count() == 0:
+        
+        # 记录数据范围和统计信息
+        total_rows = dwd_df_30d.count()
+        logging.info(f"📊 DWD data statistics:")
+        logging.info(f"  - Date range: {start_date_30d} to {batch_date}")
+        logging.info(f"  - Total rows in 30-day window: {total_rows}")
+        
+        if total_rows == 0:
             logging.warning("No DWD data for the last 30 days, skipping all aggregations.")
             context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
             return
+        
+        # 检查每天的数据分布
+        try:
+            daily_counts = dwd_df_30d.groupBy("dt").count().orderBy("dt").collect()
+            logging.info(f"📅 Daily data distribution:")
+            for row in daily_counts:
+                logging.info(f"  - {row['dt']}: {row['count']} records")
+        except Exception as e:
+            logging.warning(f"Could not get daily data distribution: {e}")
 
         # 跟踪实际创建的表
         tables_created_list = []
         
         # --- 1. Daily Aggregation ---
-        logging.info(f"Starting Daily Aggregation for date: {batch_date}")
+        logging.info(f"🔄 Starting Daily Aggregation for date: {batch_date}")
         daily_df = dwd_df_30d.filter(col("dt") == batch_date)
-        if daily_df.limit(1).count() > 0:
+        daily_count = daily_df.count()
+        logging.info(f"📊 Daily data count for {batch_date}: {daily_count} records")
+        
+        if daily_count > 0:
             daily_summary = daily_df.groupBy(date_format(col("OrderDate"), "yyyy-MM-dd").alias("order_date")).agg(
                 count("*").alias("total_orders"),
                 sum("TotalAmount").cast(AMOUNT).alias("total_amount"),
@@ -111,9 +137,12 @@ def run_dws_orders_analytics_etl(**context):
             logging.warning(f"No data found for date {batch_date}, skipping daily summary table creation.")
 
         # --- 2. Monthly Aggregation ---
-        logging.info(f"Starting Monthly Aggregation for month: {current_month_str}")
+        logging.info(f"🔄 Starting Monthly Aggregation for month: {current_month_str}")
         monthly_df = dwd_df_30d.filter(date_format(col("OrderDate"), "yyyy-MM") == current_month_str)
-        if monthly_df.limit(1).count() > 0:
+        monthly_count = monthly_df.count()
+        logging.info(f"📊 Monthly data count for {current_month_str}: {monthly_count} records")
+        
+        if monthly_count > 0:
             monthly_summary = monthly_df.groupBy(date_format(col("OrderDate"), "yyyy-MM").alias("year_month")).agg(
                 count("*").alias("total_orders"),
                 sum("TotalAmount").cast(AMOUNT).alias("total_amount"),
@@ -157,7 +186,32 @@ def run_dws_orders_analytics_etl(**context):
             logging.warning(f"No data found for month {current_month_str}, skipping monthly summary table creation.")
 
         # --- 3. Customer Analytics ---
-        logging.info(f"Starting Customer Analytics for the last 30 days.")
+        logging.info(f"🔄 Starting Customer Analytics for the last 30 days.")
+        
+        # 检查客户数据的质量
+        try:
+            customer_count = dwd_df_30d.select("CustomerID").distinct().count()
+            logging.info(f"📊 Customer analytics data:")
+            logging.info(f"  - Total records: {total_rows}")
+            logging.info(f"  - Unique customers: {customer_count}")
+            
+            # 检查必要的字段是否存在
+            required_columns = ["CustomerID", "CustomerName", "CustomerType", "TotalAmount", "OrderDate", "OrderStatus"]
+            missing_columns = []
+            for col_name in required_columns:
+                if col_name not in dwd_df_30d.columns:
+                    missing_columns.append(col_name)
+            
+            if missing_columns:
+                logging.error(f"❌ Missing required columns for customer analytics: {missing_columns}")
+                raise Exception(f"Missing required columns: {missing_columns}")
+            
+            logging.info("✅ All required columns present for customer analytics")
+            
+        except Exception as e:
+            logging.error(f"❌ Failed to analyze customer data structure: {e}")
+            raise
+        
         customer_analytics = dwd_df_30d.groupBy("CustomerID", "CustomerName", "CustomerType").agg(
             count("*").alias("total_orders"),
             sum("TotalAmount").cast(AMOUNT).alias("total_spent"),
@@ -191,6 +245,14 @@ def run_dws_orders_analytics_etl(**context):
                     .otherwise("Dormant"))
         
         try:
+            # 检查聚合结果
+            customer_analytics_count = customer_analytics.count()
+            logging.info(f"📊 Customer analytics aggregation result: {customer_analytics_count} customer records")
+            
+            if customer_analytics_count == 0:
+                logging.warning("⚠️  Customer analytics aggregation resulted in 0 records")
+                # 仍然创建空表以保持一致性
+            
             customer_analytics.withColumn("dt", lit(batch_date)) \
                 .write.mode("overwrite").partitionBy("dt").format("parquet") \
                 .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_customer_analytics") \
@@ -201,8 +263,18 @@ def run_dws_orders_analytics_etl(**context):
             row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_customer_analytics").collect()[0]['cnt']
             tables_created_list.append("dws_customer_analytics")
             logging.info(f"✅ Customer analytics complete and loaded. Row count: {row_count}")
+            
         except Exception as e:
             logging.error(f"❌ Failed to create customer analytics table: {e}")
+            logging.error(f"❌ Error details: {str(e)}")
+            # 添加更详细的错误信息
+            try:
+                logging.info("🔍 Attempting to show sample data for debugging:")
+                sample_data = dwd_df_30d.limit(5).toPandas()
+                logging.info(f"Sample data columns: {sample_data.columns.tolist()}")
+                logging.info(f"Sample data shape: {sample_data.shape}")
+            except Exception as debug_e:
+                logging.warning(f"Could not get sample data for debugging: {debug_e}")
             raise
 
         dwd_df_30d.unpersist()
