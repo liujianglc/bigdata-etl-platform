@@ -66,6 +66,9 @@ def run_dws_orders_analytics_etl(**context):
             context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
             return
 
+        # 跟踪实际创建的表
+        tables_created_list = []
+        
         # --- 1. Daily Aggregation ---
         logging.info(f"Starting Daily Aggregation for date: {batch_date}")
         daily_df = dwd_df_30d.filter(col("dt") == batch_date)
@@ -99,12 +102,13 @@ def run_dws_orders_analytics_etl(**context):
                 # Verify table was created successfully
                 spark.sql("REFRESH TABLE dws_db.dws_orders_daily_summary")
                 row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_daily_summary").collect()[0]['cnt']
+                tables_created_list.append("dws_orders_daily_summary")
                 logging.info(f"✅ Daily aggregation complete and loaded. Row count: {row_count}")
             except Exception as e:
                 logging.error(f"❌ Failed to create daily summary table: {e}")
                 raise
         else:
-            logging.info("⚠️  No data for daily aggregation on date: {batch_date}")
+            logging.warning(f"No data found for date {batch_date}, skipping daily summary table creation.")
 
         # --- 2. Monthly Aggregation ---
         logging.info(f"Starting Monthly Aggregation for month: {current_month_str}")
@@ -144,12 +148,13 @@ def run_dws_orders_analytics_etl(**context):
                 # Verify table was created successfully
                 spark.sql("REFRESH TABLE dws_db.dws_orders_monthly_summary")
                 row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_monthly_summary").collect()[0]['cnt']
+                tables_created_list.append("dws_orders_monthly_summary")
                 logging.info(f"✅ Monthly aggregation complete and loaded. Row count: {row_count}")
             except Exception as e:
                 logging.error(f"❌ Failed to create monthly summary table: {e}")
                 raise
         else:
-            logging.info(f"⚠️  No data for monthly aggregation for month: {current_month_str}")
+            logging.warning(f"No data found for month {current_month_str}, skipping monthly summary table creation.")
 
         # --- 3. Customer Analytics ---
         logging.info(f"Starting Customer Analytics for the last 30 days.")
@@ -194,6 +199,7 @@ def run_dws_orders_analytics_etl(**context):
             # Verify table was created successfully
             spark.sql("REFRESH TABLE dws_db.dws_customer_analytics")
             row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_customer_analytics").collect()[0]['cnt']
+            tables_created_list.append("dws_customer_analytics")
             logging.info(f"✅ Customer analytics complete and loaded. Row count: {row_count}")
         except Exception as e:
             logging.error(f"❌ Failed to create customer analytics table: {e}")
@@ -201,7 +207,8 @@ def run_dws_orders_analytics_etl(**context):
 
         dwd_df_30d.unpersist()
         context['task_instance'].xcom_push(key='status', value='SUCCESS')
-        context['task_instance'].xcom_push(key='tables_created', value=['dws_orders_daily_summary', 'dws_orders_monthly_summary', 'dws_customer_analytics'])
+        context['task_instance'].xcom_push(key='tables_created', value=tables_created_list)
+        logging.info(f"✅ ETL completed successfully. Tables created: {tables_created_list}")
 
     except Exception as e:
         logging.error(f"DWS Analytics ETL failed: {e}", exc_info=True)
@@ -232,25 +239,35 @@ def create_analytics_views(**context):
         
         spark.sql("USE dws_db")
         
-        # Check if required tables exist before creating views
-        required_tables = ['dws_orders_daily_summary', 'dws_orders_monthly_summary', 'dws_customer_analytics']
-        existing_tables = []
+        # 获取已创建的表列表
+        tables_created_from_etl = context['task_instance'].xcom_pull(task_ids='run_dws_analytics_etl_task', key='tables_created') or []
+        logging.info(f"Tables reported as created by ETL: {tables_created_from_etl}")
         
-        for table in required_tables:
+        # 验证表是否真正存在
+        verified_tables = []
+        for table_name in tables_created_from_etl:
             try:
-                spark.sql(f"DESCRIBE TABLE dws_db.{table}")
-                existing_tables.append(table)
-                logging.info(f"✅ Table {table} exists and is accessible")
+                spark.sql(f"DESCRIBE TABLE dws_db.{table_name}")
+                verified_tables.append(table_name)
+                logging.info(f"✅ Verified table exists: {table_name}")
             except Exception as e:
-                logging.warning(f"❌ Table {table} not found or not accessible: {e}")
+                logging.warning(f"❌ Table {table_name} not found or not accessible: {e}")
         
-        if not existing_tables:
-            logging.error("No required tables exist. Cannot create views.")
+        logging.info(f"Final verified tables list: {verified_tables}")
+        
+        if not verified_tables:
+            logging.error("No verified tables exist. Cannot create views.")
             return
+        
+        # 详细记录表依赖关系
+        logging.info("Table dependencies for view creation:")
+        logging.info(f"  - dws_orders_weekly_trend depends on: dws_orders_daily_summary")
+        logging.info(f"  - dws_monthly_business_metrics depends on: dws_orders_monthly_summary")
+        logging.info(f"  - dws_customer_value_segments depends on: dws_customer_analytics")
         
         # Create comprehensive views based on existing tables
         views_sql = []
-        tables_created = existing_tables  # Use existing_tables for consistency
+        tables_created = verified_tables  # Use verified_tables for consistency
         
         # 如果日汇总表存在，创建相关视图
         if 'dws_orders_daily_summary' in tables_created:

@@ -67,6 +67,9 @@ def run_dws_orderdetails_analytics_etl(**context):
             context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
             return
 
+        # 跟踪实际创建的表
+        tables_created_list = []
+        
         # --- 1. Daily Aggregation ---
         logging.info(f"Starting Daily Aggregation for date: {batch_date}")
         daily_df = dwd_df_30d.filter(col("dt") == batch_date)
@@ -92,7 +95,10 @@ def run_dws_orderdetails_analytics_etl(**context):
             
             daily_summary_with_dt = daily_summary.withColumn("dt", lit(batch_date))
             daily_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orderdetails_daily_summary").saveAsTable("dws_orderdetails_daily_summary")
+            tables_created_list.append("dws_orderdetails_daily_summary")
             logging.info("✅ Daily aggregation complete and loaded.")
+        else:
+            logging.warning(f"No data found for date {batch_date}, skipping daily summary table creation.")
 
         # --- 2. Product Analytics ---
         logging.info("Starting Product Analytics for the last 30 days.")
@@ -134,6 +140,7 @@ def run_dws_orderdetails_analytics_etl(**context):
 
         product_analytics_with_dt = product_analytics.withColumn("dt", lit(batch_date))
         product_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_product_analytics").saveAsTable("dws_product_analytics")
+        tables_created_list.append("dws_product_analytics")
         logging.info("✅ Product analytics complete and loaded.")
 
         # --- 3. Warehouse Analytics ---
@@ -163,11 +170,13 @@ def run_dws_orderdetails_analytics_etl(**context):
 
         warehouse_analytics_with_dt = warehouse_analytics.withColumn("dt", lit(batch_date))
         warehouse_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_warehouse_analytics").saveAsTable("dws_warehouse_analytics")
+        tables_created_list.append("dws_warehouse_analytics")
         logging.info("✅ Warehouse analytics complete and loaded.")
 
         dwd_df_30d.unpersist()
         context['task_instance'].xcom_push(key='status', value='SUCCESS')
-        context['task_instance'].xcom_push(key='tables_created', value=['dws_orderdetails_daily_summary', 'dws_product_analytics', 'dws_warehouse_analytics'])
+        context['task_instance'].xcom_push(key='tables_created', value=tables_created_list)
+        logging.info(f"✅ ETL completed successfully. Tables created: {tables_created_list}")
 
     except Exception as e:
         logging.error(f"DWS OrderDetails Analytics ETL failed: {e}", exc_info=True)
@@ -189,6 +198,30 @@ def create_analytics_views(**context):
         
         # 获取已创建的表列表
         tables_created = context['task_instance'].xcom_pull(task_ids='run_dws_orderdetails_analytics_etl', key='tables_created') or []
+        logging.info(f"Tables reported as created: {tables_created}")
+        
+        # 验证表是否真正存在
+        verified_tables = []
+        for table_name in tables_created:
+            try:
+                spark.sql(f"DESCRIBE TABLE dws_db.{table_name}")
+                verified_tables.append(table_name)
+                logging.info(f"✅ Verified table exists: {table_name}")
+            except Exception as e:
+                logging.warning(f"❌ Table {table_name} not found or not accessible: {e}")
+        
+        tables_created = verified_tables
+        logging.info(f"Final verified tables list: {tables_created}")
+        
+        if not tables_created:
+            logging.error("No verified tables exist. Cannot create views.")
+            return
+        
+        # 详细记录表依赖关系
+        logging.info("Table dependencies for view creation:")
+        logging.info(f"  - dws_orderdetails_weekly_trend depends on: dws_orderdetails_daily_summary")
+        logging.info(f"  - dws_product_category_analysis depends on: dws_product_analytics")
+        logging.info(f"  - dws_warehouse_performance depends on: dws_warehouse_analytics")
         
         # Drop existing views first to avoid conflicts
         drop_views = [
@@ -208,11 +241,15 @@ def create_analytics_views(**context):
             except Exception as e:
                 logging.warning(f"Could not drop view: {e}")
         
-        # 基础视图
-        views_sql = [
-            "CREATE VIEW dws_product_performance AS SELECT product_name, product_tier, total_revenue, total_quantity_sold, demand_level, product_performance_score FROM dws_product_analytics ORDER BY product_performance_score DESC",
-            "CREATE VIEW dws_warehouse_performance AS SELECT warehouse_name, factory_name, total_items_processed, total_value_handled, delivery_rate, avg_efficiency_score, warehouse_performance_grade FROM dws_warehouse_analytics ORDER BY avg_efficiency_score DESC"
-        ]
+        # 基础视图 - 只有在相应表存在时才创建
+        views_sql = []
+        
+        # 检查并创建基础视图
+        if 'dws_product_analytics' in tables_created:
+            views_sql.append("CREATE OR REPLACE VIEW dws_product_performance AS SELECT product_name, product_tier, total_revenue, total_quantity_sold, demand_level, product_performance_score FROM dws_product_analytics ORDER BY product_performance_score DESC")
+        
+        if 'dws_warehouse_analytics' in tables_created:
+            views_sql.append("CREATE OR REPLACE VIEW dws_warehouse_performance AS SELECT warehouse_name, factory_name, total_items_processed, total_value_handled, delivery_rate, avg_efficiency_score, warehouse_performance_grade FROM dws_warehouse_analytics ORDER BY avg_efficiency_score DESC")
         
         # 如果日汇总表存在，创建相关视图
         if 'dws_orderdetails_daily_summary' in tables_created:
@@ -332,30 +369,37 @@ def create_analytics_views(**context):
             ])
         
         # 创建视图并刷新
+        successful_views = 0
+        failed_views = 0
+        
         for i, view_sql in enumerate(views_sql):
             try:
-                spark.sql(view_sql)
-                logging.info(f"✅ Successfully created view {i+1}")
-                
-                # 提取视图名称并刷新
+                # 提取视图名称用于更好的日志记录
                 import re
                 view_match = re.search(r'(?:CREATE|CREATE OR REPLACE)\s+VIEW\s+(\w+)', view_sql, re.IGNORECASE)
-                if view_match:
-                    view_name = view_match.group(1)
-                    try:
-                        spark.sql(f"REFRESH TABLE {view_name}")
-                        logging.info(f"✅ Successfully refreshed view {view_name}")
-                    except Exception as refresh_e:
-                        logging.warning(f"Could not refresh view {view_name}: {refresh_e}")
-                else:
-                    logging.warning(f"Could not extract view name from SQL: {view_sql[:50]}...")
+                view_name = view_match.group(1) if view_match else f"view_{i+1}"
+                
+                logging.info(f"Creating view: {view_name}")
+                spark.sql(view_sql)
+                successful_views += 1
+                logging.info(f"✅ Successfully created view {view_name} ({i+1}/{len(views_sql)})")
+                
+                # 刷新视图
+                try:
+                    spark.sql(f"REFRESH TABLE {view_name}")
+                    logging.info(f"✅ Successfully refreshed view {view_name}")
+                except Exception as refresh_e:
+                    logging.warning(f"Could not refresh view {view_name}: {refresh_e}")
                     
             except Exception as e:
-                logging.error(f"Failed to create view {i+1}: {view_sql}")
-                logging.error(f"Error: {e}")
-                raise
+                failed_views += 1
+                view_name = view_match.group(1) if 'view_match' in locals() and view_match else f"view_{i+1}"
+                logging.error(f"❌ Failed to create view {view_name}: {e}")
+                logging.error(f"SQL: {view_sql[:200]}...")
+                # 继续处理其他视图，不要因为一个视图失败就停止所有操作
+                continue
                 
-        logging.info(f"✅ Successfully created and refreshed {len(views_sql)} views.")
+        logging.info(f"✅ View creation summary: {successful_views} successful, {failed_views} failed out of {len(views_sql)} total views.")
     except Exception as e:
         logging.error(f"View creation failed: {e}", exc_info=True)
         raise
