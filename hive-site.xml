@@ -36,4 +36,12 @@
         <name>hive.exec.dynamic.partition.mode</name>
         <value>nonstrict</value>
     </property>
+    <property>
+        <name>hive.metastore.execute.setugi</name>
+        <value>true</value>
+    </property>
+    <property>
+        <name>hive.warehouse.subdir.inherit.perms</name>
+        <value>true</value>
+    </property>
 </configuration>
