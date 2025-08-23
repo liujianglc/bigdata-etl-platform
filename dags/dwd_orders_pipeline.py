@@ -95,9 +95,6 @@ def run_dwd_orders_etl(**context):
             .config("spark.executor.memory", os.getenv('SPARK_EXECUTOR_MEMORY', '4g')) \
             .config("spark.sql.adaptive.enabled", "true") \
             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-            .config("spark.sql.parquet.enableVectorizedReader", "false") \
-            .config("spark.sql.hive.convertMetastoreParquet", "false") \
-            .config("spark.sql.parquet.mergeSchema", "true") \
             .enableHiveSupport() \
             .getOrCreate()
         logging.info("✅ Spark session created successfully.")
@@ -138,12 +135,14 @@ def run_dwd_orders_etl(**context):
         df = spark.sql(query)
         df.cache()
         
-        record_count = df.count()
+        # Use limit(1).count() instead of rdd.isEmpty() for better performance
+        record_count = df.limit(1).count()
         if record_count == 0:
             logging.warning("No records found for this batch. Skipping.")
             context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
             return
-        
+
+        record_count = df.count()
         logging.info(f"✅ Extracted {record_count} records.")
         
         logging.info("Starting data transformation...")
@@ -367,4 +366,3 @@ with DAG(
     end = DummyOperator(task_id='end')
 
     start >> etl_task >> create_views >> validate_dwd >> end
-end
