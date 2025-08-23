@@ -268,6 +268,8 @@ def analyze_daily_kpi_with_llm(**context):
         6. 业务改进建议
 
         请用中文回答，提供具体的数据洞察和可执行的建议。
+        
+        注意：请使用清晰的段落结构，每个分析点之间用空行分隔，便于在邮件中阅读。
         """
         
         # 使用统一的API调用函数
@@ -408,6 +410,8 @@ def analyze_customer_segments_with_llm(**context):
         7. 精准营销建议
 
         请用中文回答，提供具体的客户洞察和可执行的CRM策略。
+        
+        注意：请使用清晰的段落结构，每个分析点之间用空行分隔，便于在邮件中阅读。
         """
         
         # 使用统一的API调用函数
@@ -566,6 +570,8 @@ def analyze_monthly_trends_with_llm(**context):
         7. 未来趋势预测和战略建议
 
         请用中文回答，提供具体的趋势洞察和战略建议。
+        
+        注意：请使用清晰的段落结构，每个分析点之间用空行分隔，便于在邮件中阅读。
         """
         
         # 使用统一的API调用函数
@@ -601,6 +607,30 @@ def generate_comprehensive_report(**context):
     """生成综合分析报告"""
     import logging
     from datetime import datetime
+    import html
+    
+    def format_llm_content(content):
+        """格式化LLM分析内容为HTML"""
+        if not content or content == "分析结果不可用":
+            return "<p>分析结果不可用</p>"
+        
+        # HTML转义防止注入
+        content = html.escape(content)
+        
+        # 将换行符转换为HTML换行
+        content = content.replace('\n\n', '</p><p>').replace('\n', '<br>')
+        
+        # 添加段落标签
+        if not content.startswith('<p>'):
+            content = '<p>' + content
+        if not content.endswith('</p>'):
+            content = content + '</p>'
+        
+        # 处理数字列表
+        import re
+        content = re.sub(r'(\d+\.\s)', r'<br><strong>\1</strong>', content)
+        
+        return content
     
     try:
         # 获取所有分析结果
@@ -617,18 +647,22 @@ def generate_comprehensive_report(**context):
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>订单数据智能分析报告 - {context['ds']}</title>
             <style>
-                body {{ font-family: 'Microsoft YaHei', Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }}
+                body {{ font-family: 'Microsoft YaHei', Arial, sans-serif; margin: 20px; background-color: #f5f5f5; line-height: 1.6; }}
                 .container {{ max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
                 .header {{ text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e0e0e0; }}
-                .header h1 {{ color: #2c3e50; margin-bottom: 10px; }}
+                .header h1 {{ color: #2c3e50; margin-bottom: 10px; font-size: 28px; }}
                 .header p {{ color: #7f8c8d; font-size: 16px; }}
                 .section {{ margin-bottom: 40px; }}
-                .section h2 {{ color: #34495e; border-left: 4px solid #3498db; padding-left: 15px; margin-bottom: 20px; }}
+                .section h2 {{ color: #34495e; border-left: 4px solid #3498db; padding-left: 15px; margin-bottom: 20px; font-size: 22px; }}
                 .analysis-content {{ background-color: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #17a2b8; }}
+                .analysis-content p {{ margin-bottom: 15px; color: #2c3e50; }}
+                .analysis-content strong {{ color: #2980b9; }}
                 .data-summary {{ background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin-bottom: 15px; }}
+                .data-summary strong {{ color: #2c3e50; }}
                 .footer {{ text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0; color: #7f8c8d; }}
-                .highlight {{ background-color: #fff3cd; padding: 10px; border-radius: 5px; border-left: 4px solid #ffc107; margin: 10px 0; }}
-                pre {{ background-color: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; }}
+                .highlight {{ background-color: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107; margin: 15px 0; }}
+                .highlight strong {{ color: #856404; }}
+                .no-data {{ background-color: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; border-left: 4px solid #dc3545; }}
             </style>
         </head>
         <body>
@@ -641,6 +675,7 @@ def generate_comprehensive_report(**context):
         
         # 添加日KPI分析
         if daily_kpi_analysis and daily_kpi_analysis != "no_data":
+            kpi_content = format_llm_content(daily_kpi_analysis.get('llm_analysis', '分析结果不可用'))
             report_html += f"""
                 <div class="section">
                     <h2>📊 日度KPI分析</h2>
@@ -649,13 +684,24 @@ def generate_comprehensive_report(**context):
                         <strong>数据点数:</strong> {len(daily_kpi_analysis.get('kpi_data', []))} 天
                     </div>
                     <div class="analysis-content">
-                        <pre>{daily_kpi_analysis.get('llm_analysis', '分析结果不可用')}</pre>
+                        {kpi_content}
+                    </div>
+                </div>
+            """
+        else:
+            report_html += """
+                <div class="section">
+                    <h2>📊 日度KPI分析</h2>
+                    <div class="no-data">
+                        <strong>⚠️ 暂无日度KPI分析数据</strong><br>
+                        请检查DWS层数据是否正常生成
                     </div>
                 </div>
             """
         
         # 添加客户分段分析
         if customer_segments_analysis and customer_segments_analysis != "no_data":
+            segments_content = format_llm_content(customer_segments_analysis.get('llm_analysis', '分析结果不可用'))
             report_html += f"""
                 <div class="section">
                     <h2>👥 客户分段分析</h2>
@@ -665,13 +711,24 @@ def generate_comprehensive_report(**context):
                         <strong>状态分类数:</strong> {len(customer_segments_analysis.get('status_data', []))}
                     </div>
                     <div class="analysis-content">
-                        <pre>{customer_segments_analysis.get('llm_analysis', '分析结果不可用')}</pre>
+                        {segments_content}
+                    </div>
+                </div>
+            """
+        else:
+            report_html += """
+                <div class="section">
+                    <h2>👥 客户分段分析</h2>
+                    <div class="no-data">
+                        <strong>⚠️ 暂无客户分段分析数据</strong><br>
+                        请检查DWS层数据是否正常生成
                     </div>
                 </div>
             """
         
         # 添加月度趋势分析
         if monthly_trends_analysis and monthly_trends_analysis != "no_data":
+            trends_content = format_llm_content(monthly_trends_analysis.get('llm_analysis', '分析结果不可用'))
             report_html += f"""
                 <div class="section">
                     <h2>📈 月度趋势分析</h2>
@@ -681,7 +738,17 @@ def generate_comprehensive_report(**context):
                         <strong>业务指标月数:</strong> {len(monthly_trends_analysis.get('metrics_data', []))}
                     </div>
                     <div class="analysis-content">
-                        <pre>{monthly_trends_analysis.get('llm_analysis', '分析结果不可用')}</pre>
+                        {trends_content}
+                    </div>
+                </div>
+            """
+        else:
+            report_html += """
+                <div class="section">
+                    <h2>📈 月度趋势分析</h2>
+                    <div class="no-data">
+                        <strong>⚠️ 暂无月度趋势分析数据</strong><br>
+                        请检查DWS层数据是否正常生成
                     </div>
                 </div>
             """
@@ -887,7 +954,14 @@ with DAG(
         msg['Date'] = formatdate(localtime=True)
         msg['Subject'] = subject
         
-        # 添加HTML内容
+        # 添加HTML内容和纯文本备选
+        # 创建纯文本版本作为备选
+        import re
+        text_content = re.sub(r'<[^>]+>', '', report_content)  # 简单的HTML标签移除
+        text_content = re.sub(r'\s+', ' ', text_content).strip()  # 清理多余空白
+        
+        # 添加HTML和纯文本版本
+        msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
         msg.attach(MIMEText(report_content, 'html', 'utf-8'))
         
         # 尝试多种发送方式
