@@ -26,3 +26,5 @@ coverage.xml
 .hypothesis/
 .DS_Store
 Thumbs.db
+**/.ipynb_checkpoints
+**/__pycache__
