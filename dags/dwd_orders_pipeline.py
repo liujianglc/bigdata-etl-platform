@@ -142,7 +142,8 @@ def run_dwd_orders_etl(**context):
             context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
             return
 
-        record_count = df.count()
+
+        record_count = df.cache().count()
         logging.info(f"✅ Extracted {record_count} records.")
         
         logging.info("Starting data transformation...")

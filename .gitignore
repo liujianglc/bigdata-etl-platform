@@ -61,3 +61,5 @@ hadoop_datanode/
 # Test files
 test_*.py
 *_test.py
+
+config/mysql_to_hive_config.yaml
