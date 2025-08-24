@@ -244,6 +244,10 @@ def run_dwd_orders_etl(**context):
           .option("path", location) \
           .saveAsTable(table_name)
         
+        # Refresh metadata after writing new partition
+        spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orders")
+        spark.catalog.refreshTable("dwd_db.dwd_orders")
+
         df.unpersist()
         logging.info("✅ Data loaded successfully.")
 

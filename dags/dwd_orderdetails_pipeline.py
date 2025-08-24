@@ -178,8 +178,13 @@ def run_dwd_orderdetails_etl(**context):
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orderdetails"
         spark.sql("CREATE DATABASE IF NOT EXISTS dwd_db")
         df.withColumn('dt', lit(batch_date)).write.mode("overwrite").partitionBy("dt").format("parquet").option("path",location).saveAsTable(table_name)
+
+        spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orderdetails")
+        spark.catalog.refreshTable("dwd_db.dwd_orderdetails")
+
         df.unpersist()
         logging.info("✅ Data loaded successfully.")
+        
 
         summary = {'total_records':record_count, 'partitions':[{'dt':batch_date, 'path':location}]}
         context['task_instance'].xcom_push(key='hdfs_load_summary', value=summary)
