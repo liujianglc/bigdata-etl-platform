@@ -133,7 +133,6 @@ def run_dwd_orders_etl(**context):
         
         logging.info(f"Executing dynamically generated query:\n{query}")
         df = spark.sql(query)
-        df.cache()
         
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
         record_count = df.limit(1).count()
@@ -150,8 +149,9 @@ def run_dwd_orders_etl(**context):
             context['task_instance'].xcom_push(key='table_name', value=table_name)
             return
 
-
-        record_count = df.cache().count()
+        # Cache after we know there's data
+        df.cache()
+        record_count = df.count()
         logging.info(f"✅ Extracted {record_count} records.")
         
         logging.info("Starting data transformation...")
@@ -236,6 +236,17 @@ def run_dwd_orders_etl(**context):
         table_name = "dwd_db.dwd_orders"
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
         spark.sql("CREATE DATABASE IF NOT EXISTS dwd_db")
+        
+        # Clear any existing cache for the table before writing
+        try:
+            spark.catalog.uncacheTable(table_name)
+            logging.info(f"Uncached table {table_name}")
+        except Exception as e:
+            logging.info(f"Table {table_name} was not cached: {e}")
+        
+        # Clear Spark SQL cache
+        spark.sql("CLEAR CACHE")
+        
         # Write data with schema enforcement
         df.withColumn('dt', lit(batch_date)) \
           .write.mode("overwrite") \
@@ -247,6 +258,13 @@ def run_dwd_orders_etl(**context):
         # Refresh metadata after writing new partition
         spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orders")
         spark.catalog.refreshTable("dwd_db.dwd_orders")
+        
+        # Verify the partition exists
+        try:
+            partition_check = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
+            logging.info(f"Available partitions after write: {[p[0] for p in partition_check]}")
+        except Exception as e:
+            logging.warning(f"Could not verify partitions: {e}")
 
         df.unpersist()
         logging.info("✅ Data loaded successfully.")
