@@ -95,6 +95,9 @@ def run_dwd_orders_etl(**context):
             .config("spark.executor.memory", os.getenv('SPARK_EXECUTOR_MEMORY', '4g')) \
             .config("spark.sql.adaptive.enabled", "true") \
             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+            .config("spark.sql.parquet.cacheMetadata", "false") \
+            .config("spark.sql.hive.metastorePartitionPruning", "true") \
+            .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
             .enableHiveSupport() \
             .getOrCreate()
         logging.info("✅ Spark session created successfully.")
@@ -249,7 +252,7 @@ def run_dwd_orders_etl(**context):
         
         # Refresh metadata after writing new partition
         spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orders")
-        spark.catalog.refreshTable("dwd_db.dwd_orders")
+        spark.sql("REFRESH TABLE dwd_db.dwd_orders")
 
         df.unpersist()
         logging.info("✅ Data loaded successfully.")
