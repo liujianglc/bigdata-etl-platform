@@ -962,7 +962,7 @@ with DAG(
         
         # 添加HTML和纯文本版本
         msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
-        msg.attach(MIMEText(report_conten
+        msg.attach(MIMEText(report_conten, 'plain', 'utf-8'))
         
         # 尝试多种发送方式
         email_methods = [
