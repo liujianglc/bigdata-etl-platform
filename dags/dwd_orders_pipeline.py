@@ -237,34 +237,19 @@ def run_dwd_orders_etl(**context):
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
         spark.sql("CREATE DATABASE IF NOT EXISTS dwd_db")
         
-        # Clear any existing cache for the table before writing
-        try:
-            spark.catalog.uncacheTable(table_name)
-            logging.info(f"Uncached table {table_name}")
-        except Exception as e:
-            logging.info(f"Table {table_name} was not cached: {e}")
-        
-        # Clear Spark SQL cache
-        spark.sql("CLEAR CACHE")
-        
-        # Write data with schema enforcement
+        # Use replaceWhere approach - much more efficient and avoids cache issues
         df.withColumn('dt', lit(batch_date)) \
-          .write.mode("overwrite") \
+          .write \
+          .mode("overwrite") \
           .partitionBy("dt") \
           .format("parquet") \
+          .option("replaceWhere", f"dt = '{batch_date}'") \
           .option("path", location) \
           .saveAsTable(table_name)
         
         # Refresh metadata after writing new partition
         spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orders")
         spark.catalog.refreshTable("dwd_db.dwd_orders")
-        
-        # Verify the partition exists
-        try:
-            partition_check = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
-            logging.info(f"Available partitions after write: {[p[0] for p in partition_check]}")
-        except Exception as e:
-            logging.warning(f"Could not verify partitions: {e}")
 
         df.unpersist()
         logging.info("✅ Data loaded successfully.")

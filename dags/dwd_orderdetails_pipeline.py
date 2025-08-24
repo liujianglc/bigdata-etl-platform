@@ -131,8 +131,8 @@ def run_dwd_orderdetails_etl(**context):
         
         logging.info(f"Executing dynamically generated query:\n{query}")
         df = spark.sql(query)
-        df.cache()
         logging.info('Executed query successfully.')
+        
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
         record_count = df.limit(1).count()
         if record_count == 0:
@@ -148,7 +148,9 @@ def run_dwd_orderdetails_etl(**context):
             context['task_instance'].xcom_push(key='table_name', value=table_name)
             return
 
-        record_count = df.cache().count()
+        # Cache after we know there's data
+        df.cache()
+        record_count = df.count()
         logging.info(f"✅ Extracted {record_count} records.")
 
         # ... (The rest of the transformation and loading logic remains the same) ...
@@ -177,8 +179,18 @@ def run_dwd_orderdetails_etl(**context):
         table_name = "dwd_db.dwd_orderdetails"
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orderdetails"
         spark.sql("CREATE DATABASE IF NOT EXISTS dwd_db")
-        df.withColumn('dt', lit(batch_date)).write.mode("overwrite").partitionBy("dt").format("parquet").option("path",location).saveAsTable(table_name)
+        
+        # Use replaceWhere approach - much more efficient and avoids cache issues
+        df.withColumn('dt', lit(batch_date)) \
+          .write \
+          .mode("overwrite") \
+          .partitionBy("dt") \
+          .format("parquet") \
+          .option("replaceWhere", f"dt = '{batch_date}'") \
+          .option("path", location) \
+          .saveAsTable(table_name)
 
+        # Refresh metadata after writing new partition
         spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orderdetails")
         spark.catalog.refreshTable("dwd_db.dwd_orderdetails")
 
