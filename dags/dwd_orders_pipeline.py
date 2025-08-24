@@ -138,8 +138,16 @@ def run_dwd_orders_etl(**context):
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
         record_count = df.limit(1).count()
         if record_count == 0:
-            logging.warning("No records found for this batch. Skipping.")
-            context['task_instance'].xcom_push(key='status', value='SKIPPED_EMPTY_DATA')
+            logging.warning("No records found for this batch.")
+            table_name = "dwd_db.dwd_orders"
+            location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
+            
+            # Use the utility function to handle empty partition
+            from dags.utils.empty_partition_handler import handle_empty_partition
+            status = handle_empty_partition(spark, df, table_name, batch_date, context, location)
+            
+            context['task_instance'].xcom_push(key='status', value=status)
+            context['task_instance'].xcom_push(key='table_name', value=table_name)
             return
 
 
@@ -252,7 +260,8 @@ def run_dwd_orders_etl(**context):
 
 def create_orders_hive_views(**context):
     """Creates Hive views for the DWD Orders table."""
-    if context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='status') == 'SKIPPED_EMPTY_DATA':
+    status = context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='status')
+    if status in ['SKIPPED_EMPTY_DATA']:
         logging.warning("Skipping view creation as no data was processed.")
         return
 
@@ -316,8 +325,12 @@ def create_orders_hive_views(**context):
 
 def validate_orders_dwd(**context):
     """Validates the DWD Orders data quality."""
-    if context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='status') == 'SKIPPED_EMPTY_DATA':
+    status = context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='status')
+    if status == 'SKIPPED_EMPTY_DATA':
         logging.warning("Skipping validation as no data was processed.")
+        return
+    elif status == 'SUCCESS_EMPTY_PARTITION':
+        logging.info("✅ Empty partition validation passed.")
         return
 
     stats = context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='transform_stats')

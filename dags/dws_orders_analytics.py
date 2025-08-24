@@ -66,7 +66,11 @@ def run_dws_orders_analytics_etl(**context):
             context['task_instance'].xcom_push(key='status', value='SKIPPED_NO_SOURCE_TABLE')
             return
         
-        dwd_df_30d = spark.table("dwd_db.dwd_orders").filter(col("dt").between(start_date_30d, batch_date))
+        # Load DWD data and filter out empty partitions
+        dwd_df_30d = spark.table("dwd_db.dwd_orders").filter(
+            col("dt").between(start_date_30d, batch_date) &
+            (col("is_empty_partition").isNull() | (col("is_empty_partition") == False))
+        )
         dwd_df_30d.cache()
         
         # 记录数据范围和统计信息
@@ -97,6 +101,18 @@ def run_dws_orders_analytics_etl(**context):
         daily_df = dwd_df_30d.filter(col("dt") == batch_date)
         daily_count = daily_df.count()
         logging.info(f"📊 Daily data count for {batch_date}: {daily_count} records")
+        
+        # Check if this date had an empty partition in DWD
+        try:
+            empty_partition_check = spark.sql(f"""
+                SELECT COUNT(*) as cnt 
+                FROM dwd_db.dwd_orders 
+                WHERE dt = '{batch_date}' 
+                AND is_empty_partition = true
+            """).collect()[0]['cnt']
+            has_empty_partition = empty_partition_check > 0
+        except:
+            has_empty_partition = False
         
         if daily_count > 0:
             daily_summary = daily_df.groupBy(date_format(col("OrderDate"), "yyyy-MM-dd").alias("order_date")).agg(
@@ -133,6 +149,43 @@ def run_dws_orders_analytics_etl(**context):
             except Exception as e:
                 logging.error(f"❌ Failed to create daily summary table: {e}")
                 raise
+        elif has_empty_partition:
+            # Create zero-value aggregation for empty partition days
+            logging.info(f"Creating zero-value daily summary for empty partition date: {batch_date}")
+            from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DecimalType
+            
+            zero_summary_schema = StructType([
+                StructField("order_date", StringType(), True),
+                StructField("total_orders", IntegerType(), True),
+                StructField("total_amount", DecimalType(20,2), True),
+                StructField("avg_order_value", DecimalType(20,2), True),
+                StructField("total_net_amount", DecimalType(20,2), True),
+                StructField("completed_orders", IntegerType(), True),
+                StructField("cancelled_orders", IntegerType(), True),
+                StructField("delayed_orders", IntegerType(), True),
+                StructField("high_priority_orders", IntegerType(), True),
+                StructField("vip_orders", IntegerType(), True),
+                StructField("avg_processing_days", DecimalType(10,2), True),
+                StructField("max_order_amount", DecimalType(20,2), True),
+                StructField("min_order_amount", DecimalType(20,2), True),
+                StructField("good_quality_orders", IntegerType(), True),
+                StructField("poor_quality_orders", IntegerType(), True),
+                StructField("completion_rate", DecimalType(10,2), True),
+                StructField("cancellation_rate", DecimalType(10,2), True),
+                StructField("delay_rate", DecimalType(10,2), True),
+                StructField("data_quality_score", DecimalType(10,2), True),
+                StructField("dt", StringType(), True)
+            ])
+            
+            zero_data = [(batch_date, 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, batch_date)]
+            zero_summary_df = spark.createDataFrame(zero_data, zero_summary_schema)
+            
+            zero_summary_df.write.mode("overwrite").partitionBy("dt").format("parquet") \
+                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary") \
+                .saveAsTable("dws_orders_daily_summary")
+            
+            tables_created_list.append("dws_orders_daily_summary")
+            logging.info("✅ Zero-value daily aggregation created for empty partition.")
         else:
             logging.warning(f"No data found for date {batch_date}, skipping daily summary table creation.")
 

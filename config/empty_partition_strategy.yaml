@@ -1,0 +1,31 @@
+# Empty Partition Strategy Configuration
+empty_partition_strategy:
+  # Strategy options: 'create_empty', 'skip', 'use_previous_day'
+  default_strategy: 'create_empty'
+  
+  # Table-specific strategies
+  tables:
+    dwd_db.dwd_orders:
+      strategy: 'create_empty'
+      # Optional: fallback days to look for data
+      fallback_days: 3
+      
+    dwd_db.dwd_orderdetails:
+      strategy: 'create_empty'
+      fallback_days: 3
+      
+    # Example: Different strategy for another table
+    # dwd_db.dwd_products:
+    #   strategy: 'use_previous_day'
+    #   fallback_days: 7
+
+# Metadata to include in empty partitions
+empty_partition_metadata:
+  include_etl_timestamp: true
+  include_batch_id: true
+  add_empty_flag: true
+  
+# Notification settings for empty partitions
+notifications:
+  log_empty_partitions: true
+  alert_consecutive_empty_days: 3
