@@ -145,7 +145,7 @@ def run_dwd_orders_etl(**context):
             location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
             
             # Use the utility function to handle empty partition
-            from dags.utils.empty_partition_handler import handle_empty_partition
+            from utils.empty_partition_handler import handle_empty_partition
             status = handle_empty_partition(spark, df, table_name, batch_date, context, location)
             
             context['task_instance'].xcom_push(key='status', value=status)

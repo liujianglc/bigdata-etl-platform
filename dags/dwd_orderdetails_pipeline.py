@@ -74,6 +74,42 @@ def get_table_partition_strategy(spark, table_name, target_date, config):
             return target_date # 回退
 
 # =============================================================================
+# EMPTY PARTITION HANDLER
+# =============================================================================
+def _handle_empty_partition_inline(spark, df, table_name, batch_date, context, location):
+    """Handle empty partition creation inline to avoid import issues."""
+    from pyspark.sql.functions import lit, current_timestamp
+    
+    logging.info(f"Creating empty partition for {table_name} on {batch_date}")
+    
+    # Create empty DataFrame with same schema
+    empty_df = spark.createDataFrame([], df.schema)
+    
+    # Add partition column and metadata
+    empty_df = empty_df.withColumn('dt', lit(batch_date)) \
+                      .withColumn('etl_created_date', current_timestamp()) \
+                      .withColumn('etl_batch_id', lit(context['ds_nodash'])) \
+                      .withColumn('is_empty_partition', lit(True))
+    
+    # Create database if not exists
+    database_name = table_name.split('.')[0]
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS {database_name}")
+    
+    # Write empty partition
+    empty_df.write.mode("overwrite") \
+           .partitionBy("dt") \
+           .format("parquet") \
+           .option("path", location) \
+           .saveAsTable(table_name)
+    
+    # Refresh metadata
+    spark.sql(f"MSCK REPAIR TABLE {table_name}")
+    spark.catalog.refreshTable(table_name)
+    
+    logging.info(f"✅ Empty partition created for {table_name}")
+    return 'SUCCESS_EMPTY_PARTITION'
+
+# =============================================================================
 # MAIN SPARK ETL TASK
 # =============================================================================
 def run_dwd_orderdetails_etl(**context):
@@ -143,9 +179,8 @@ def run_dwd_orderdetails_etl(**context):
             table_name = "dwd_db.dwd_orderdetails"
             location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orderdetails"
             
-            # Use the utility function to handle empty partition
-            from dags.utils.empty_partition_handler import handle_empty_partition
-            status = handle_empty_partition(spark, df, table_name, batch_date, context, location)
+            # Handle empty partition inline to avoid import issues
+            status = _handle_empty_partition_inline(spark, df, table_name, batch_date, context, location)
             
             context['task_instance'].xcom_push(key='status', value=status)
             context['task_instance'].xcom_push(key='table_name', value=table_name)
