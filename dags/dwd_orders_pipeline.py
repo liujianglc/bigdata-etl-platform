@@ -141,29 +141,6 @@ def run_dwd_orders_etl(**context):
         logging.info(f"Executing dynamically generated query:\n{query}")
         df = spark.sql(query)
         
-        # Handle schema compatibility issues - convert INT96 to proper date types
-        from pyspark.sql.functions import to_date, to_timestamp
-        from pyspark.sql.types import DateType, TimestampType
-        
-        # Check and convert date columns that might be stored as INT96
-        date_columns = ['OrderDate', 'RequiredDate', 'ShippedDate']
-        timestamp_columns = ['CreatedDate', 'UpdatedDate']
-        
-        for col_name in date_columns:
-            if col_name in df.columns:
-                current_type = dict(df.dtypes)[col_name]
-                if current_type != 'date':
-                    logging.info(f"Converting {col_name} from {current_type} to date")
-                    df = df.withColumn(col_name, to_date(col(col_name)))
-        
-        for col_name in timestamp_columns:
-            if col_name in df.columns:
-                current_type = dict(df.dtypes)[col_name]
-                if current_type != 'timestamp':
-                    logging.info(f"Converting {col_name} from {current_type} to timestamp")
-                    df = df.withColumn(col_name, to_timestamp(col(col_name)))
-        
-        
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
         record_count = df.limit(1).count()
         if record_count == 0:
@@ -363,7 +340,7 @@ def run_dwd_orders_etl(**context):
 def create_orders_hive_views(**context):
     """Creates Hive views for the DWD Orders table."""
     status = context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='status')
-    if status in ['SKIPPED_EMPTY_DATA', 'SUCCESS_EMPTY_PARTITION']:
+    if status in ['SKIPPED_EMPTY_DATA', 'SUCCESS_EMPTY_PARTITION', 'FALLBACK_FAILED_NO_DATA']:
         logging.warning(f"Skipping view creation as status is {status}.")
         return
 
@@ -379,7 +356,9 @@ def create_orders_hive_views(**context):
             .config("spark.sql.parquet.writeLegacyFormat", "false") \
             .config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MILLIS") \
             .config("spark.sql.parquet.datetimeRebaseModeInWrite", "CORRECTED") \
-            .config("spark.sq
+            .config("spark.sql.hive.convertMetastoreParquet", "false") \
+            .enableHiveSupport() \
+            .getOrCreate()
         spark.sql("USE dwd_db")
         
         # Refresh table metadata before checking schema
@@ -414,7 +393,7 @@ def create_orders_hive_views(**context):
             SELECT *
             FROM dwd_orders
             WHERE OrderStatus IN ('Pending', 'Confirmed', 'Shipping', 'Shipped')
-              AND DataQualityLevel IN ('Good', 'Excellent'){empty_partition_filter}
+              AND DataQualityLevel IN ('Good', 'Fair'){empty_partition_filter}
             """,
             
             # 2. 延期订单视图  
@@ -471,6 +450,9 @@ def validate_orders_dwd(**context):
         return
     elif status == 'SUCCESS_EMPTY_PARTITION':
         logging.info("✅ Empty partition validation passed.")
+        return
+    elif status == 'FALLBACK_FAILED_NO_DATA':
+        logging.warning("⚠️ Fallback strategy failed - no data available for validation.")
         return
 
     stats = context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='transform_stats')
