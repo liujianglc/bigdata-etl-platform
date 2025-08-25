@@ -187,6 +187,7 @@ def run_dwd_orders_etl(**context):
                 StructField("DataQualityLevel", StringType(), True),
                 StructField("etl_created_date", TimestampType(), True),
                 StructField("etl_batch_id", StringType(), True),
+                StructField("is_empty_partition", BooleanType(), True),
             ])
             
             empty_df = spark.createDataFrame([], transformed_schema)
@@ -264,7 +265,8 @@ def run_dwd_orders_etl(**context):
         )
 
         df = df.withColumn('etl_created_date', current_timestamp()) \
-               .withColumn('etl_batch_id', lit(context['ds_nodash']))
+               .withColumn('etl_batch_id', lit(context['ds_nodash'])) \
+               .withColumn('is_empty_partition', lit(False))
 
         logging.info("✅ Transformation complete.")
 
@@ -359,37 +361,41 @@ def create_orders_hive_views(**context):
         try:
             table_columns = [col.name for col in spark.table("dwd_orders").schema.fields]
             has_transformed_columns = all(col in table_columns for col in ['OrderStatus', 'DataQualityLevel', 'IsDelayed', 'OrderPriority'])
+
             
             if not has_transformed_columns:
                 logging.warning("Table doesn't have transformed columns (likely empty partition), skipping view creation.")
                 return
+                
+            logging.info(f"Table schema check: transformed_columns={has_transformed_columns}")
         except Exception as e:
             logging.warning(f"Could not check table schema: {e}, skipping view creation.")
-      
+            return
+        
+        # 现在所有分区都有 is_empty_partition 列，总是使用过滤器
+        empty_partition_filter = " AND (is_empty_partition IS NULL OR is_empty_partition = false)"
         
         views_sql =  [
             # 1. 当前活跃订单视图
-            """
+            f"""
             CREATE OR REPLACE VIEW dwd_orders_active AS
             SELECT *
             FROM dwd_orders
             WHERE OrderStatus IN ('Pending', 'Confirmed', 'Shipping', 'Shipped')
-              AND DataQualityLevel IN ('Good', 'Excellent')
-              AND (is_empty_partition IS NULL OR is_empty_partition = false)
+              AND DataQualityLevel IN ('Good', 'Excellent'){empty_partition_filter}
             """,
             
             # 2. 延期订单视图  
-            """
+            f"""
             CREATE OR REPLACE VIEW dwd_orders_delayed AS
             SELECT *
             FROM dwd_orders
             WHERE IsDelayed = true
-              AND OrderStatus NOT IN ('Cancelled', 'Delivered')
-              AND (is_empty_partition IS NULL OR is_empty_partition = false)
+              AND OrderStatus NOT IN ('Cancelled', 'Delivered'){empty_partition_filter}
             """,
             
             # 3. 各状态订单统计视图
-            """
+            f"""
             CREATE OR REPLACE VIEW dwd_orders_status_summary AS
             SELECT 
                 OrderStatus,
@@ -398,18 +404,17 @@ def create_orders_hive_views(**context):
                 AVG(TotalAmount) as avg_amount,
                 COUNT(CASE WHEN IsDelayed = true THEN 1 END) as delayed_count
             FROM dwd_orders
-            WHERE (is_empty_partition IS NULL OR is_empty_partition = false)
+            WHERE 1=1{empty_partition_filter}
             GROUP BY OrderStatus
             """,
             
             # 4. 高价值订单视图
-            """
+            f"""
             CREATE OR REPLACE VIEW dwd_orders_high_value AS
             SELECT *
             FROM dwd_orders
             WHERE OrderPriority = 'High'
-              AND TotalAmount >= 10000
-              AND (is_empty_partition IS NULL OR is_empty_partition = false)
+              AND TotalAmount >= 10000{empty_partition_filter}
             """
         ]
         

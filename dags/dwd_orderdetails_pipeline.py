@@ -239,6 +239,7 @@ def run_dwd_orderdetails_etl(**context):
                 StructField("DataQualityLevel", StringType(), True),
                 StructField("etl_created_date", TimestampType(), True),
                 StructField("etl_batch_id", StringType(), True),
+                StructField("is_empty_partition", BooleanType(), True),
             ])
             
             empty_df = spark.createDataFrame([], transformed_schema)
@@ -277,7 +278,7 @@ def run_dwd_orderdetails_etl(**context):
         df = df.withColumn("WarehouseEfficiency", (spark_sum(when(col("OrderDetailStatus")=='Delivered',1).otherwise(0)).over(win)/spark_count(lit(1)).over(win))*100)
         df = df.withColumn("DataQualityScore", lit(100)-when(col('ProductName')=='Unknown Product',15).otherwise(0)-when(col('ProductCategory')=='Unknown Category',10).otherwise(0))
         df = df.withColumn("DataQualityLevel", when(col("DataQualityScore")<=70,"Poor").when(col("DataQualityScore")<=85,"Fair").otherwise("Good"))
-        df = df.withColumn('etl_created_date',current_timestamp()).withColumn('etl_batch_id',lit(context['ds_nodash']))
+        df = df.withColumn('etl_created_date',current_timestamp()).withColumn('etl_batch_id',lit(context['ds_nodash'])).withColumn('is_empty_partition', lit(False))
         logging.info("✅ Transformation complete.")
 
         logging.info("Calculating statistics...")
@@ -361,7 +362,7 @@ def create_orderdetails_hive_views(**context):
         except Exception as e:
             logging.warning(f"Failed to refresh table metadata: {e}")
         
-        # Check if the table has transformed columns by examining the schema
+        # Check if the table has transformed columns
         try:
             table_columns = [col.name for col in spark.table("dwd_orderdetails").schema.fields]
             has_transformed_columns = all(col in table_columns for col in ['IsHighValue', 'DataQualityLevel', 'IsDiscounted', 'OrderDetailStatus'])
@@ -369,33 +370,36 @@ def create_orderdetails_hive_views(**context):
             if not has_transformed_columns:
                 logging.warning("Table doesn't have transformed columns (likely empty partition), skipping view creation.")
                 return
+                
+            logging.info(f"Table schema check: transformed_columns={has_transformed_columns}")
         except Exception as e:
             logging.warning(f"Could not check table schema: {e}, skipping view creation.")
             return
         
+        # 现在所有分区都有 is_empty_partition 列，总是使用过滤器
+        empty_partition_filter = " AND (is_empty_partition IS NULL OR is_empty_partition = false)"
+        
         views = [
             # 1. 高价值订单明细视图
-            """
+            f"""
             CREATE OR REPLACE VIEW dwd_orderdetails_high_value AS
             SELECT *
             FROM dwd_orderdetails
             WHERE IsHighValue = true
-              AND DataQualityLevel IN ('Good', 'Excellent')
-              AND (is_empty_partition IS NULL OR is_empty_partition = false)
+              AND DataQualityLevel IN ('Good', 'Excellent'){empty_partition_filter}
             """,
             
             # 2. 折扣商品视图
-            """
+            f"""
             CREATE OR REPLACE VIEW dwd_orderdetails_discounted AS
             SELECT *
             FROM dwd_orderdetails
             WHERE IsDiscounted = true
-              AND Discount > 0
-              AND (is_empty_partition IS NULL OR is_empty_partition = false)
+              AND Discount > 0{empty_partition_filter}
             """,
             
             # 3. 产品销售统计视图
-            """
+            f"""
             CREATE OR REPLACE VIEW dwd_orderdetails_product_summary AS
             SELECT 
                 ProductID,
@@ -407,12 +411,12 @@ def create_orderdetails_hive_views(**context):
                 AVG(UnitPrice) as avg_unit_price,
                 AVG(Discount) as avg_discount
             FROM dwd_orderdetails
-            WHERE (is_empty_partition IS NULL OR is_empty_partition = false)
+            WHERE 1=1{empty_partition_filter}
             GROUP BY ProductID, ProductName, ProductCategory
             """,
             
             # 4. 仓库效率视图
-            """
+            f"""
             CREATE OR REPLACE VIEW dwd_orderdetails_warehouse_performance AS
             SELECT 
                 WarehouseID,
@@ -422,7 +426,7 @@ def create_orderdetails_hive_views(**context):
                 SUM(CASE WHEN OrderDetailStatus = 'Delivered' THEN 1 ELSE 0 END) as delivered_items,
                 AVG(WarehouseEfficiency) as efficiency_score
             FROM dwd_orderdetails
-            WHERE (is_empty_partition IS NULL OR is_empty_partition = false)
+            WHERE 1=1{empty_partition_filter}
             GROUP BY WarehouseID, WarehouseName, FactoryName
             """
         ]
