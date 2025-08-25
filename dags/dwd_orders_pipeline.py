@@ -141,6 +141,29 @@ def run_dwd_orders_etl(**context):
         logging.info(f"Executing dynamically generated query:\n{query}")
         df = spark.sql(query)
         
+        # Handle schema compatibility issues - convert INT96 to proper date types
+        from pyspark.sql.functions import to_date, to_timestamp
+        from pyspark.sql.types import DateType, TimestampType
+        
+        # Check and convert date columns that might be stored as INT96
+        date_columns = ['OrderDate', 'RequiredDate', 'ShippedDate']
+        timestamp_columns = ['CreatedDate', 'UpdatedDate']
+        
+        for col_name in date_columns:
+            if col_name in df.columns:
+                current_type = dict(df.dtypes)[col_name]
+                if current_type != 'date':
+                    logging.info(f"Converting {col_name} from {current_type} to date")
+                    df = df.withColumn(col_name, to_date(col(col_name)))
+        
+        for col_name in timestamp_columns:
+            if col_name in df.columns:
+                current_type = dict(df.dtypes)[col_name]
+                if current_type != 'timestamp':
+                    logging.info(f"Converting {col_name} from {current_type} to timestamp")
+                    df = df.withColumn(col_name, to_timestamp(col(col_name)))
+        
+        
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
         record_count = df.limit(1).count()
         if record_count == 0:
@@ -356,8 +379,7 @@ def create_orders_hive_views(**context):
             .config("spark.sql.parquet.writeLegacyFormat", "false") \
             .config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MILLIS") \
             .config("spark.sql.parquet.datetimeRebaseModeInWrite", "CORRECTED") \
-            .config("spark.sql.hive.convertMetastoreParquet", "false") \
-            .enableHiveSupport().getOrCreate()
+            .config("spark.sq
         spark.sql("USE dwd_db")
         
         # Refresh table metadata before checking schema
