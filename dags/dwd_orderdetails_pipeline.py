@@ -111,10 +111,19 @@ def run_dwd_orderdetails_etl(**context):
         logging.info(f"Starting ETL for batch date: {batch_date}")
 
         partition_config = load_config('/opt/airflow/config/table_partition_strategy.yaml')
-        dim_tables_to_join = ['ods.Orders', 'ods.Customers', 'ods.Products', 'ods.Warehouses', 'ods.Factories']
-        table_partition_info = {t: get_table_partition_strategy(spark, t, batch_date, partition_config) for t in dim_tables_to_join}
         
-        # 调试信息：检查每个维度表的分区策略和数据
+        # 首先检查主表 ods.OrderDetails 的分区策略
+        orderdetails_partition = get_table_partition_strategy(spark, 'ods.OrderDetails', batch_date, partition_config)
+        logging.info(f"ods.OrderDetails partition strategy result: {orderdetails_partition}")
+        
+        # 包含所有需要检查的表，包括主表
+        all_tables_to_check = ['ods.OrderDetails', 'ods.Orders', 'ods.Customers', 'ods.Products', 'ods.Warehouses', 'ods.Factories']
+        table_partition_info = {t: get_table_partition_strategy(spark, t, batch_date, partition_config) for t in all_tables_to_check}
+        
+        # 维度表用于JOIN
+        dim_tables_to_join = ['ods.Orders', 'ods.Customers', 'ods.Products', 'ods.Warehouses', 'ods.Factories']
+        
+        # 调试信息：检查所有表的分区策略和数据
         for table, partition_date in table_partition_info.items():
             try:
                 if partition_date:
@@ -125,6 +134,9 @@ def run_dwd_orderdetails_etl(**context):
                     logging.info(f"{table} using no partition filter with {count} total records")
             except Exception as e:
                 logging.warning(f"Failed to check {table}: {e}")
+        
+        # 使用统一的分区信息
+        orderdetails_partition = table_partition_info.get('ods.OrderDetails')
         
         # 动态构建JOIN子句
         join_clauses = []
@@ -143,30 +155,23 @@ def run_dwd_orderdetails_etl(**context):
 
         join_sql = "\n".join(join_clauses)
 
-        # 首先检查主表 ods.OrderDetails 是否有数据
-        try:
-            orderdetails_count = spark.sql(f"SELECT COUNT(*) as cnt FROM ods.OrderDetails WHERE dt='{batch_date}'").collect()[0]['cnt']
-            logging.info(f"ods.OrderDetails has {orderdetails_count} records for date {batch_date}")
-            
-            if orderdetails_count == 0:
-                logging.warning(f"No data found in ods.OrderDetails for date {batch_date}")
-                # 检查其他相关日期是否有数据
-                recent_partitions = spark.sql("SHOW PARTITIONS ods.OrderDetails").collect()
-                available_dates = [p[0].split('=')[1] for p in recent_partitions]
-                logging.info(f"Available partitions in ods.OrderDetails: {sorted(available_dates)[-5:]}")  # 显示最近5个分区
-        except Exception as e:
-            logging.error(f"Failed to check ods.OrderDetails: {e}")
+        # 主表数据检查已经在上面的循环中完成了，这里只需要确认
+        if orderdetails_partition != batch_date and orderdetails_partition:
+            logging.warning(f"ods.OrderDetails: Using fallback partition {orderdetails_partition} instead of target date {batch_date}")
+        elif not orderdetails_partition:
+            logging.info("ods.OrderDetails: Using non-partitioned table or no partition filter")
 
-        # 构建最终查询
-        query = f"""SELECT od.*, o.CustomerID, c.CustomerName, c.CustomerType, p.ProductName, p.Category as ProductCategory, p.Specification as ProductSpecification, w.WarehouseName, w.Manager as WarehouseManager, f.FactoryName, f.Location as FactoryLocation, o.OrderDate, o.Status as OrderStatus, o.PaymentMethod, o.PaymentStatus FROM ods.OrderDetails od {join_sql} WHERE od.dt='{batch_date}'"""
+        # 构建最终查询 - 使用动态分区日期
+        orderdetails_filter = f"od.dt='{orderdetails_partition}'" if orderdetails_partition else "1=1"
+        query = f"""SELECT od.*, o.CustomerID, c.CustomerName, c.CustomerType, p.ProductName, p.Category as ProductCategory, p.Specification as ProductSpecification, w.WarehouseName, w.Manager as WarehouseManager, f.FactoryName, f.Location as FactoryLocation, o.OrderDate, o.Status as OrderStatus, o.PaymentMethod, o.PaymentStatus FROM ods.OrderDetails od {join_sql} WHERE {orderdetails_filter}"""
         
         logging.info(f"Executing dynamically generated query:\n{query}")
         
         # 分步调试：先检查基础查询
         try:
-            base_query = f"SELECT COUNT(*) as cnt FROM ods.OrderDetails od WHERE od.dt='{batch_date}'"
+            base_query = f"SELECT COUNT(*) as cnt FROM ods.OrderDetails od WHERE {orderdetails_filter}"
             base_count = spark.sql(base_query).collect()[0]['cnt']
-            logging.info(f"Base OrderDetails count: {base_count}")
+            logging.info(f"Base OrderDetails count with filter '{orderdetails_filter}': {base_count}")
             
             if base_count > 0:
                 # 逐步添加 JOIN 来找出问题
@@ -175,7 +180,7 @@ def run_dwd_orderdetails_etl(**context):
                 FROM ods.OrderDetails od 
                 LEFT JOIN ods.Orders o ON od.OrderID = o.OrderID 
                     {f"AND o.dt = '{table_partition_info.get('ods.Orders')}'" if table_partition_info.get('ods.Orders') else ""}
-                WHERE od.dt='{batch_date}'
+                WHERE {orderdetails_filter}
                 """
                 step1_count = spark.sql(step1_query).collect()[0]['cnt']
                 logging.info(f"After joining with Orders: {step1_count}")
