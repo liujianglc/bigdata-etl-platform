@@ -361,19 +361,19 @@ def create_orders_hive_views(**context):
         try:
             table_columns = [col.name for col in spark.table("dwd_orders").schema.fields]
             has_transformed_columns = all(col in table_columns for col in ['OrderStatus', 'DataQualityLevel', 'IsDelayed', 'OrderPriority'])
-
+            has_empty_partition_flag = 'is_empty_partition' in table_columns
             
             if not has_transformed_columns:
                 logging.warning("Table doesn't have transformed columns (likely empty partition), skipping view creation.")
                 return
                 
-            logging.info(f"Table schema check: transformed_columns={has_transformed_columns}")
+            logging.info(f"Table schema check: transformed_columns={has_transformed_columns}, empty_partition_flag={has_empty_partition_flag}")
         except Exception as e:
             logging.warning(f"Could not check table schema: {e}, skipping view creation.")
             return
         
-        # 现在所有分区都有 is_empty_partition 列，总是使用过滤器
-        empty_partition_filter = " AND (is_empty_partition IS NULL OR is_empty_partition = false)"
+        # 根据表是否有空分区标志来构建不同的视图
+        empty_partition_filter = " AND (is_empty_partition IS NULL OR is_empty_partition = false)" if has_empty_partition_flag else ""
         
         views_sql =  [
             # 1. 当前活跃订单视图

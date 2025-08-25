@@ -31,7 +31,7 @@ def load_empty_partition_config():
         logging.warning(f"Empty partition config {config_path} not found, using defaults.")
         return default_config
 
-def handle_empty_partition(spark, df, table_name, batch_date, context, location):
+def handle_empty_partition(spark, empty_df, table_name, batch_date, context, location):
     """
     Handle empty partition creation based on configuration.
     
@@ -62,68 +62,67 @@ def handle_empty_partition(spark, df, table_name, batch_date, context, location)
         return _handle_previous_day_strategy(spark, table_name, batch_date, table_strategy, context)
     
     elif strategy == 'create_empty':
-        return _create_empty_partition(spark, df, table_name, batch_date, context, location, metadata_config)
-    
+        return _create_empty_partition(spark, empty_df, table_name, batch_date, context, location, metadata_config)
+
     else:
         logging.warning(f"Unknown strategy '{strategy}', defaulting to create_empty")
-        return _create_empty_partition(spark, df, table_name, batch_date, context, location, metadata_config)
+        return _create_empty_partition(spark, empty_df, table_name, batch_date, context, location, metadata_config)
 
-def _create_empty_partition(spark, df, table_name, batch_date, context, location, metadata_config):
+
+def _create_empty_partition(spark, empty_df, table_name, batch_date, context, location, metadata_config):
     """Create an empty partition with the correct schema."""
     logging.info(f"Creating empty partition for {table_name} on {batch_date}")
-    
+
     # Clear any existing cache for this table to avoid file conflicts
     try:
         spark.catalog.uncacheTable(table_name)
     except:
         pass  # Table might not be cached
-    
-    # Create empty DataFrame with same schema
-    empty_df = spark.createDataFrame([], df.schema)
-    
+
     # Add partition column
     empty_df = empty_df.withColumn('dt', lit(batch_date))
-    
+
     # Add metadata columns based on configuration
     if metadata_config.get('include_etl_timestamp', True):
         empty_df = empty_df.withColumn('etl_created_date', current_timestamp())
-    
+
     if metadata_config.get('include_batch_id', True):
         empty_df = empty_df.withColumn('etl_batch_id', lit(context['ds_nodash']))
-    
+
     if metadata_config.get('add_empty_flag', True):
         empty_df = empty_df.withColumn('is_empty_partition', lit(True))
-    
+
     # Create database if not exists
     database_name = table_name.split('.')[0]
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {database_name}")
-    
+
     # Write empty partition
     empty_df.write.mode("overwrite") \
            .partitionBy("dt") \
            .format("parquet") \
            .option("path", location) \
            .saveAsTable(table_name)
-    
+
     # Comprehensive metadata refresh after writing
     try:
         spark.sql(f"MSCK REPAIR TABLE {table_name}")
     except Exception as e:
         logging.warning(f"MSCK REPAIR failed for {table_name}: {e}")
-    
+
     try:
         spark.sql(f"REFRESH TABLE {table_name}")
     except Exception as e:
         logging.warning(f"REFRESH TABLE failed for {table_name}: {e}")
-    
+
     # Clear catalog cache to ensure fresh metadata
     try:
         spark.catalog.clearCache()
     except Exception as e:
         logging.warning(f"Clear cache failed: {e}")
-    
+
     logging.info(f"✅ Empty partition created for {table_name}")
     return 'SUCCESS_EMPTY_PARTITION'
+
 
 def _handle_previous_day_strategy(spark, table_name, batch_date, table_strategy, context):
     """Try to use data from previous days as fallback."""
