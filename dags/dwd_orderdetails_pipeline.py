@@ -438,6 +438,10 @@ def create_orderdetails_hive_views(**context):
             """
         ]
         for v in views: spark.sql(v)
+
+        spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orderdetails")
+        spark.sql("REFRESH TABLE dwd_db.dwd_orderdetails")
+        spark.catalog.clearCache()
         logging.info(f"✅ Successfully created {len(views)} views.")
     except Exception as e:
         logging.error(f"View creation failed: {e}", exc_info=True)
