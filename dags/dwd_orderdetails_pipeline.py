@@ -74,42 +74,6 @@ def get_table_partition_strategy(spark, table_name, target_date, config):
             return target_date # 回退
 
 # =============================================================================
-# EMPTY PARTITION HANDLER
-# =============================================================================
-def _handle_empty_partition_inline(spark, df, table_name, batch_date, context, location):
-    """Handle empty partition creation inline to avoid import issues."""
-    from pyspark.sql.functions import lit, current_timestamp
-    
-    logging.info(f"Creating empty partition for {table_name} on {batch_date}")
-    
-    # Create empty DataFrame with same schema
-    empty_df = spark.createDataFrame([], df.schema)
-    
-    # Add partition column and metadata
-    empty_df = empty_df.withColumn('dt', lit(batch_date)) \
-                      .withColumn('etl_created_date', current_timestamp()) \
-                      .withColumn('etl_batch_id', lit(context['ds_nodash'])) \
-                      .withColumn('is_empty_partition', lit(True))
-    
-    # Create database if not exists
-    database_name = table_name.split('.')[0]
-    spark.sql(f"CREATE DATABASE IF NOT EXISTS {database_name}")
-    
-    # Write empty partition
-    empty_df.write.mode("overwrite") \
-           .partitionBy("dt") \
-           .format("parquet") \
-           .option("path", location) \
-           .saveAsTable(table_name)
-    
-    # Refresh metadata
-    spark.sql(f"MSCK REPAIR TABLE {table_name}")
-    spark.catalog.refreshTable(table_name)
-    
-    logging.info(f"✅ Empty partition created for {table_name}")
-    return 'SUCCESS_EMPTY_PARTITION'
-
-# =============================================================================
 # MAIN SPARK ETL TASK
 # =============================================================================
 def run_dwd_orderdetails_etl(**context):
@@ -179,8 +143,55 @@ def run_dwd_orderdetails_etl(**context):
             table_name = "dwd_db.dwd_orderdetails"
             location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orderdetails"
             
-            # Handle empty partition inline to avoid import issues
-            status = _handle_empty_partition_inline(spark, df, table_name, batch_date, context, location)
+            # Create an empty DataFrame with the full transformed schema
+            from pyspark.sql.types import StructType, StructField, StringType, DecimalType, DateType, TimestampType, BooleanType, IntegerType, DoubleType
+            
+            transformed_schema = StructType([
+                StructField("OrderDetailID", IntegerType(), True),
+                StructField("OrderID", IntegerType(), True),
+                StructField("ProductID", IntegerType(), True),
+                StructField("Quantity", IntegerType(), True),
+                StructField("UnitPrice", DecimalType(20,2), True),
+                StructField("Discount", DecimalType(5,2), True),
+                StructField("Amount", DecimalType(20,2), True),
+                StructField("WarehouseID", IntegerType(), True),
+                StructField("Status", StringType(), True),
+                StructField("CreatedDate", TimestampType(), True),
+                StructField("UpdatedDate", TimestampType(), True),
+                StructField("CustomerID", IntegerType(), True),
+                StructField("CustomerName", StringType(), True),
+                StructField("CustomerType", StringType(), True),
+                StructField("ProductName", StringType(), True),
+                StructField("ProductCategory", StringType(), True),
+                StructField("ProductSpecification", StringType(), True),
+                StructField("WarehouseName", StringType(), True),
+                StructField("WarehouseManager", StringType(), True),
+                StructField("FactoryName", StringType(), True),
+                StructField("FactoryLocation", StringType(), True),
+                StructField("OrderDate", DateType(), True),
+                StructField("OrderStatus", StringType(), True),
+                StructField("PaymentMethod", StringType(), True),
+                StructField("PaymentStatus", StringType(), True),
+                # Transformed columns
+                StructField("OrderDetailStatus", StringType(), True),
+                StructField("LineTotal", DecimalType(20,2), True),
+                StructField("DiscountAmount", DecimalType(20,2), True),
+                StructField("NetAmount", DecimalType(20,2), True),
+                StructField("PriceCategory", StringType(), True),
+                StructField("IsHighValue", BooleanType(), True),
+                StructField("IsDiscounted", BooleanType(), True),
+                StructField("WarehouseEfficiency", DoubleType(), True),
+                StructField("DataQualityScore", IntegerType(), True),
+                StructField("DataQualityLevel", StringType(), True),
+                StructField("etl_created_date", TimestampType(), True),
+                StructField("etl_batch_id", StringType(), True),
+            ])
+            
+            empty_df = spark.createDataFrame([], transformed_schema)
+            
+            # Use the utility function to handle empty partition
+            from utils.empty_partition_handler import handle_empty_partition
+            status = handle_empty_partition(spark, empty_df, table_name, batch_date, context, location)
             
             context['task_instance'].xcom_push(key='status', value=status)
             context['task_instance'].xcom_push(key='table_name', value=table_name)
@@ -249,8 +260,8 @@ def run_dwd_orderdetails_etl(**context):
 
 def create_orderdetails_hive_views(**context):
     status = context['task_instance'].xcom_pull(task_ids='run_dwd_orderdetails_etl_task', key='status')
-    if status in ['SKIPPED_EMPTY_DATA']:
-        logging.warning("Skipping view creation as no data was processed.")
+    if status in ['SKIPPED_EMPTY_DATA', 'SUCCESS_EMPTY_PARTITION']:
+        logging.warning(f"Skipping view creation as status is {status}.")
         return
 
     from pyspark.sql import SparkSession
@@ -258,6 +269,19 @@ def create_orderdetails_hive_views(**context):
     try:
         spark = SparkSession.builder.appName("CreateDWDViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
+        
+        # Check if the table has transformed columns by examining the schema
+        try:
+            table_columns = [col.name for col in spark.table("dwd_orderdetails").schema.fields]
+            has_transformed_columns = all(col in table_columns for col in ['IsHighValue', 'DataQualityLevel', 'IsDiscounted', 'OrderDetailStatus'])
+            
+            if not has_transformed_columns:
+                logging.warning("Table doesn't have transformed columns (likely empty partition), skipping view creation.")
+                return
+        except Exception as e:
+            logging.warning(f"Could not check table schema: {e}, skipping view creation.")
+            return
+        
         views = [
             # 1. 高价值订单明细视图
             """
@@ -266,6 +290,7 @@ def create_orderdetails_hive_views(**context):
             FROM dwd_orderdetails
             WHERE IsHighValue = true
               AND DataQualityLevel IN ('Good', 'Excellent')
+              AND (is_empty_partition IS NULL OR is_empty_partition = false)
             """,
             
             # 2. 折扣商品视图
@@ -275,6 +300,7 @@ def create_orderdetails_hive_views(**context):
             FROM dwd_orderdetails
             WHERE IsDiscounted = true
               AND Discount > 0
+              AND (is_empty_partition IS NULL OR is_empty_partition = false)
             """,
             
             # 3. 产品销售统计视图
@@ -290,6 +316,7 @@ def create_orderdetails_hive_views(**context):
                 AVG(UnitPrice) as avg_unit_price,
                 AVG(Discount) as avg_discount
             FROM dwd_orderdetails
+            WHERE (is_empty_partition IS NULL OR is_empty_partition = false)
             GROUP BY ProductID, ProductName, ProductCategory
             """,
             
@@ -304,6 +331,7 @@ def create_orderdetails_hive_views(**context):
                 SUM(CASE WHEN OrderDetailStatus = 'Delivered' THEN 1 ELSE 0 END) as delivered_items,
                 AVG(WarehouseEfficiency) as efficiency_score
             FROM dwd_orderdetails
+            WHERE (is_empty_partition IS NULL OR is_empty_partition = false)
             GROUP BY WarehouseID, WarehouseName, FactoryName
             """
         ]

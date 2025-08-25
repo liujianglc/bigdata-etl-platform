@@ -144,9 +144,56 @@ def run_dwd_orders_etl(**context):
             table_name = "dwd_db.dwd_orders"
             location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
             
+            # Create an empty DataFrame with the full transformed schema
+            # This ensures empty partitions have the same schema as data partitions
+            from pyspark.sql.types import StructType, StructField, StringType, DecimalType, DateType, TimestampType, BooleanType, IntegerType
+            
+            transformed_schema = StructType([
+                StructField("OrderID", IntegerType(), True),
+                StructField("CustomerID", IntegerType(), True),
+                StructField("OrderDate", DateType(), True),
+                StructField("RequiredDate", DateType(), True),
+                StructField("ShippedDate", DateType(), True),
+                StructField("Status", StringType(), True),
+                StructField("PaymentMethod", StringType(), True),
+                StructField("PaymentStatus", StringType(), True),
+                StructField("TotalAmount", DecimalType(20,2), True),
+                StructField("Discount", DecimalType(20,2), True),
+                StructField("ShippingAddress", StringType(), True),
+                StructField("ShippingMethod", StringType(), True),
+                StructField("Remarks", StringType(), True),
+                StructField("CreatedBy", IntegerType(), True),
+                StructField("CreatedDate", TimestampType(), True),
+                StructField("UpdatedDate", TimestampType(), True),
+                StructField("CustomerName", StringType(), True),
+                StructField("CustomerType", StringType(), True),
+                StructField("CreatedByName", StringType(), True),
+                StructField("CreatedByDepartment", StringType(), True),
+                # Transformed columns
+                StructField("OrderStatus", StringType(), True),
+                StructField("LeadTimeDays", IntegerType(), True),
+                StructField("ProcessingDays", IntegerType(), True),
+                StructField("IsDelayed", BooleanType(), True),
+                StructField("DeliveryStatus", StringType(), True),
+                StructField("OrderYear", IntegerType(), True),
+                StructField("OrderMonth", IntegerType(), True),
+                StructField("OrderDay", IntegerType(), True),
+                StructField("OrderDayOfWeek", IntegerType(), True),
+                StructField("OrderQuarter", IntegerType(), True),
+                StructField("NetAmount", DecimalType(20,2), True),
+                StructField("OrderSizeCategory", StringType(), True),
+                StructField("OrderPriority", StringType(), True),
+                StructField("DataQualityScore", IntegerType(), True),
+                StructField("DataQualityLevel", StringType(), True),
+                StructField("etl_created_date", TimestampType(), True),
+                StructField("etl_batch_id", StringType(), True),
+            ])
+            
+            empty_df = spark.createDataFrame([], transformed_schema)
+            
             # Use the utility function to handle empty partition
             from utils.empty_partition_handler import handle_empty_partition
-            status = handle_empty_partition(spark, df, table_name, batch_date, context, location)
+            status = handle_empty_partition(spark, empty_df, table_name, batch_date, context, location)
             
             context['task_instance'].xcom_push(key='status', value=status)
             context['task_instance'].xcom_push(key='table_name', value=table_name)
@@ -271,8 +318,8 @@ def run_dwd_orders_etl(**context):
 def create_orders_hive_views(**context):
     """Creates Hive views for the DWD Orders table."""
     status = context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='status')
-    if status in ['SKIPPED_EMPTY_DATA']:
-        logging.warning("Skipping view creation as no data was processed.")
+    if status in ['SKIPPED_EMPTY_DATA', 'SUCCESS_EMPTY_PARTITION']:
+        logging.warning(f"Skipping view creation as status is {status}.")
         return
 
     from pyspark.sql import SparkSession
@@ -280,6 +327,18 @@ def create_orders_hive_views(**context):
     try:
         spark = SparkSession.builder.appName("CreateDWDOrderViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
+        
+        # Check if the table has transformed columns by examining the schema
+        try:
+            table_columns = [col.name for col in spark.table("dwd_orders").schema.fields]
+            has_transformed_columns = all(col in table_columns for col in ['OrderStatus', 'DataQualityLevel', 'IsDelayed', 'OrderPriority'])
+            
+            if not has_transformed_columns:
+                logging.warning("Table doesn't have transformed columns (likely empty partition), skipping view creation.")
+                return
+        except Exception as e:
+            logging.warning(f"Could not check table schema: {e}, skipping view creation.")
+            return
         
         views_sql =  [
             # 1. 当前活跃订单视图
@@ -289,6 +348,7 @@ def create_orders_hive_views(**context):
             FROM dwd_orders
             WHERE OrderStatus IN ('Pending', 'Confirmed', 'Shipping', 'Shipped')
               AND DataQualityLevel IN ('Good', 'Excellent')
+              AND (is_empty_partition IS NULL OR is_empty_partition = false)
             """,
             
             # 2. 延期订单视图  
@@ -298,6 +358,7 @@ def create_orders_hive_views(**context):
             FROM dwd_orders
             WHERE IsDelayed = true
               AND OrderStatus NOT IN ('Cancelled', 'Delivered')
+              AND (is_empty_partition IS NULL OR is_empty_partition = false)
             """,
             
             # 3. 各状态订单统计视图
@@ -310,6 +371,7 @@ def create_orders_hive_views(**context):
                 AVG(TotalAmount) as avg_amount,
                 COUNT(CASE WHEN IsDelayed = true THEN 1 END) as delayed_count
             FROM dwd_orders
+            WHERE (is_empty_partition IS NULL OR is_empty_partition = false)
             GROUP BY OrderStatus
             """,
             
@@ -320,6 +382,7 @@ def create_orders_hive_views(**context):
             FROM dwd_orders
             WHERE OrderPriority = 'High'
               AND TotalAmount >= 10000
+              AND (is_empty_partition IS NULL OR is_empty_partition = false)
             """
         ]
         
