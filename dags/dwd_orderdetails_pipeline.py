@@ -29,6 +29,7 @@ def load_config(file_path, default_config={}):
         logging.warning(f"配置文件 {file_path} 不存在，使用默认配置。")
         return default_config
 
+
 def get_table_partition_strategy(spark, table_name, target_date, config):
     """根据配置获取表的最佳分区日期，能处理非分区表。"""
     try:
@@ -73,6 +74,7 @@ def get_table_partition_strategy(spark, table_name, target_date, config):
             logging.error(f"检查 {table_name} 分区失败: {e}")
             return target_date # 回退
 
+
 # =============================================================================
 # MAIN SPARK ETL TASK
 # =============================================================================
@@ -80,7 +82,7 @@ def run_dwd_orderdetails_etl(**context):
     from pyspark.sql import SparkSession, Window
     from pyspark.sql.functions import (
         col, when, year, month, dayofmonth, dayofweek, quarter, coalesce, lit, 
-        min, max, current_timestamp, length, avg, sum as spark_sum, count as spark_count,
+        min, max, current_timestamp, length, avg, spark_sum, spark_count,
         create_map
     )
 
@@ -202,9 +204,17 @@ def run_dwd_orderdetails_etl(**context):
         record_count = df.count()
         logging.info(f"✅ Extracted {record_count} records.")
 
-        # ... (The rest of the transformation and loading logic remains the same) ...
         logging.info("Starting data transformation...")
-        maps = load_config('/opt/airflow/dags/config/orderdetail_status_mapping.yaml', {'orderdetail_status_mapping': {}, 'product_category_mapping': {}})
+        maps = load_config('/opt/airflow/dags/config/orderdetail_status_mapping.yaml', {
+            'orderdetail_status_mapping': {
+                '1': 'Pending',
+                '2': 'Processing',
+                '3': 'Shipped',
+                '4': 'Delivered',
+                '5': 'Cancelled'
+            },
+            'product_category_mapping': {}
+        })
         status_map = create_map([lit(x) for c in maps['orderdetail_status_mapping'].items() for x in c])
         cat_map = create_map([lit(x) for c in maps['product_category_mapping'].items() for x in c])
 
@@ -238,12 +248,13 @@ def run_dwd_orderdetails_etl(**context):
         # Use a more robust write approach
         df_with_partition = df.withColumn('dt', lit(batch_date))
         
-        # Write the data using overwrite mode with explicit partition handling
+        # Write the data using dynamic partition overwrite.
+        # With 'partitionOverwriteMode' set to 'dynamic', this will only overwrite the specific partition
+        # for the given batch_date, which is safer and more efficient.
         df_with_partition.write \
           .mode("overwrite") \
           .partitionBy("dt") \
           .format("parquet") \
-          .option("replaceWhere", f"dt = '{batch_date}'") \
           .option("path", location) \
           .saveAsTable(table_name)
 
@@ -277,6 +288,7 @@ def run_dwd_orderdetails_etl(**context):
         raise
     finally:
         if spark: spark.stop()
+
 
 def create_orderdetails_hive_views(**context):
     status = context['task_instance'].xcom_pull(task_ids='run_dwd_orderdetails_etl_task', key='status')
@@ -370,6 +382,7 @@ def create_orderdetails_hive_views(**context):
     finally:
         if spark: spark.stop()
 
+
 def validate_orderdetails_dwd(**context):
     status = context['task_instance'].xcom_pull(task_ids='run_dwd_orderdetails_etl_task', key='status')
     if status == 'SKIPPED_EMPTY_DATA':
@@ -392,6 +405,7 @@ def validate_orderdetails_dwd(**context):
         logging.warning(f"Validation issues found: {issues}")
     else:
         logging.info("✅ Data validation passed.")
+
 
 with DAG(
     'dwd_orderdetails_pipeline',
