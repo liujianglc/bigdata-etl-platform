@@ -229,9 +229,17 @@ def run_dwd_orderdetails_etl(**context):
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orderdetails"
         spark.sql("CREATE DATABASE IF NOT EXISTS dwd_db")
         
-        # Use replaceWhere approach - much more efficient and avoids cache issues
-        df.withColumn('dt', lit(batch_date)) \
-          .write \
+        # Clear any existing cache for this table to avoid file conflicts
+        try:
+            spark.catalog.uncacheTable("dwd_db.dwd_orderdetails")
+        except:
+            pass  # Table might not be cached
+        
+        # Use a more robust write approach
+        df_with_partition = df.withColumn('dt', lit(batch_date))
+        
+        # Write the data using overwrite mode with explicit partition handling
+        df_with_partition.write \
           .mode("overwrite") \
           .partitionBy("dt") \
           .format("parquet") \
@@ -239,13 +247,25 @@ def run_dwd_orderdetails_etl(**context):
           .option("path", location) \
           .saveAsTable(table_name)
 
-        # Refresh metadata after writing new partition
-        spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orderdetails")
-        spark.catalog.refreshTable("dwd_db.dwd_orderdetails")
+        # Comprehensive metadata refresh
+        try:
+            spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orderdetails")
+        except Exception as e:
+            logging.warning(f"MSCK REPAIR failed: {e}")
+        
+        try:
+            spark.sql("REFRESH TABLE dwd_db.dwd_orderdetails")
+        except Exception as e:
+            logging.warning(f"REFRESH TABLE failed: {e}")
+        
+        # Clear catalog cache to ensure fresh metadata
+        try:
+            spark.catalog.clearCache()
+        except Exception as e:
+            logging.warning(f"Clear cache failed: {e}")
 
         df.unpersist()
         logging.info("✅ Data loaded successfully.")
-        
 
         summary = {'total_records':record_count, 'partitions':[{'dt':batch_date, 'path':location}]}
         context['task_instance'].xcom_push(key='hdfs_load_summary', value=summary)
@@ -269,6 +289,13 @@ def create_orderdetails_hive_views(**context):
     try:
         spark = SparkSession.builder.appName("CreateDWDViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
+        
+        # Refresh table metadata before checking schema
+        try:
+            spark.sql("REFRESH TABLE dwd_orderdetails")
+            spark.catalog.clearCache()
+        except Exception as e:
+            logging.warning(f"Failed to refresh table metadata: {e}")
         
         # Check if the table has transformed columns by examining the schema
         try:

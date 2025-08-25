@@ -72,6 +72,12 @@ def _create_empty_partition(spark, df, table_name, batch_date, context, location
     """Create an empty partition with the correct schema."""
     logging.info(f"Creating empty partition for {table_name} on {batch_date}")
     
+    # Clear any existing cache for this table to avoid file conflicts
+    try:
+        spark.catalog.uncacheTable(table_name)
+    except:
+        pass  # Table might not be cached
+    
     # Create empty DataFrame with same schema
     empty_df = spark.createDataFrame([], df.schema)
     
@@ -99,6 +105,23 @@ def _create_empty_partition(spark, df, table_name, batch_date, context, location
            .option("path", location) \
            .saveAsTable(table_name)
     
+    # Comprehensive metadata refresh after writing
+    try:
+        spark.sql(f"MSCK REPAIR TABLE {table_name}")
+    except Exception as e:
+        logging.warning(f"MSCK REPAIR failed for {table_name}: {e}")
+    
+    try:
+        spark.sql(f"REFRESH TABLE {table_name}")
+    except Exception as e:
+        logging.warning(f"REFRESH TABLE failed for {table_name}: {e}")
+    
+    # Clear catalog cache to ensure fresh metadata
+    try:
+        spark.catalog.clearCache()
+    except Exception as e:
+        logging.warning(f"Clear cache failed: {e}")
+    
     logging.info(f"✅ Empty partition created for {table_name}")
     return 'SUCCESS_EMPTY_PARTITION'
 
@@ -107,9 +130,21 @@ def _handle_previous_day_strategy(spark, table_name, batch_date, table_strategy,
     fallback_days = table_strategy.get('fallback_days', 3)
     batch_datetime = datetime.strptime(batch_date, '%Y-%m-%d')
     
+    # Clear any existing cache for this table
+    try:
+        spark.catalog.uncacheTable(table_name)
+    except:
+        pass
+    
     for i in range(1, fallback_days + 1):
         fallback_date = (batch_datetime - timedelta(days=i)).strftime('%Y-%m-%d')
         try:
+            # Refresh table metadata before checking partitions
+            try:
+                spark.sql(f"REFRESH TABLE {table_name}")
+            except:
+                pass
+            
             # Check if partition exists for fallback date
             partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
             available_dates = [p[0].split('=')[1] for p in partitions]
@@ -129,6 +164,22 @@ def _handle_previous_day_strategy(spark, table_name, batch_date, table_strategy,
                           .partitionBy("dt") \
                           .format("parquet") \
                           .saveAsTable(table_name)
+                
+                # Refresh metadata after writing
+                try:
+                    spark.sql(f"MSCK REPAIR TABLE {table_name}")
+                except Exception as e:
+                    logging.warning(f"MSCK REPAIR failed for {table_name}: {e}")
+                
+                try:
+                    spark.sql(f"REFRESH TABLE {table_name}")
+                except Exception as e:
+                    logging.warning(f"REFRESH TABLE failed for {table_name}: {e}")
+                
+                try:
+                    spark.catalog.clearCache()
+                except Exception as e:
+                    logging.warning(f"Clear cache failed: {e}")
                 
                 return 'SUCCESS_FALLBACK_DATA'
                 

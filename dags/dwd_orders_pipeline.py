@@ -287,19 +287,39 @@ def run_dwd_orders_etl(**context):
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
         spark.sql("CREATE DATABASE IF NOT EXISTS dwd_db")
         
-        # Use replaceWhere approach - much more efficient and avoids cache issues
-        df.withColumn('dt', lit(batch_date)) \
-          .write \
+        # Clear any existing cache for this table to avoid file conflicts
+        try:
+            spark.catalog.uncacheTable("dwd_db.dwd_orders")
+        except:
+            pass  # Table might not be cached
+        
+        # Use a more robust write approach
+        df_with_partition = df.withColumn('dt', lit(batch_date))
+        
+        # Write the data using overwrite mode with explicit partition handling
+        df_with_partition.write \
           .mode("overwrite") \
           .partitionBy("dt") \
           .format("parquet") \
-          .option("replaceWhere", f"dt = '{batch_date}'") \
           .option("path", location) \
           .saveAsTable(table_name)
+
+        # Comprehensive metadata refresh
+        try:
+            spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orders")
+        except Exception as e:
+            logging.warning(f"MSCK REPAIR failed: {e}")
         
-        # Refresh metadata after writing new partition
-        spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orders")
-        spark.sql("REFRESH TABLE dwd_db.dwd_orders")
+        try:
+            spark.sql("REFRESH TABLE dwd_db.dwd_orders")
+        except Exception as e:
+            logging.warning(f"REFRESH TABLE failed: {e}")
+        
+        # Clear catalog cache to ensure fresh metadata
+        try:
+            spark.catalog.clearCache()
+        except Exception as e:
+            logging.warning(f"Clear cache failed: {e}")
 
         df.unpersist()
         logging.info("✅ Data loaded successfully.")
@@ -328,6 +348,13 @@ def create_orders_hive_views(**context):
         spark = SparkSession.builder.appName("CreateDWDOrderViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
         
+        # Refresh table metadata before checking schema
+        try:
+            spark.sql("REFRESH TABLE dwd_orders")
+            spark.catalog.clearCache()
+        except Exception as e:
+            logging.warning(f"Failed to refresh table metadata: {e}")
+        
         # Check if the table has transformed columns by examining the schema
         try:
             table_columns = [col.name for col in spark.table("dwd_orders").schema.fields]
@@ -338,7 +365,7 @@ def create_orders_hive_views(**context):
                 return
         except Exception as e:
             logging.warning(f"Could not check table schema: {e}, skipping view creation.")
-            return
+      
         
         views_sql =  [
             # 1. 当前活跃订单视图
