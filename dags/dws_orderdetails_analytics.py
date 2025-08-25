@@ -58,11 +58,20 @@ def run_dws_orderdetails_analytics_etl(**context):
         except Exception as e:
             logging.warning(f"Could not drop existing tables: {e}")
 
-        # Load DWD data and filter out empty partitions
-        dwd_df_30d = spark.table("dwd_db.dwd_orderdetails").filter(
-            col("dt").between(start_date_30d, batch_date) &
-            (col("is_empty_partition").isNull() | (col("is_empty_partition") == False))
-        )
+        # Load DWD data and filter out empty partitions (if column exists)
+        base_table = spark.table("dwd_db.dwd_orderdetails")
+        table_columns = [field.name for field in base_table.schema.fields]
+        has_empty_partition_flag = 'is_empty_partition' in table_columns
+        
+        if has_empty_partition_flag:
+            logging.info("Found is_empty_partition column, applying filter")
+            dwd_df_30d = base_table.filter(
+                col("dt").between(start_date_30d, batch_date) &
+                (col("is_empty_partition").isNull() | (col("is_empty_partition") == False))
+            )
+        else:
+            logging.info("is_empty_partition column not found, skipping empty partition filter")
+            dwd_df_30d = base_table.filter(col("dt").between(start_date_30d, batch_date))
         dwd_df_30d.cache()
 
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
@@ -79,16 +88,21 @@ def run_dws_orderdetails_analytics_etl(**context):
         daily_df = dwd_df_30d.filter(col("dt") == batch_date)
         daily_actual_data_count = daily_df.limit(1).count()
         
-        # Check if this date had an empty partition in DWD
+        # Check if this date had an empty partition in DWD (if column exists)
         try:
-            empty_partition_check = spark.sql(f"""
-                SELECT COUNT(*) as cnt 
-                FROM dwd_db.dwd_orderdetails 
-                WHERE dt = '{batch_date}' 
-                AND is_empty_partition = true
-            """).collect()[0]['cnt']
-            has_empty_partition = empty_partition_check > 0
-        except:
+            if has_empty_partition_flag:
+                empty_partition_check = spark.sql(f"""
+                    SELECT COUNT(*) as cnt 
+                    FROM dwd_db.dwd_orderdetails 
+                    WHERE dt = '{batch_date}' 
+                    AND is_empty_partition = true
+                """).collect()[0]['cnt']
+                has_empty_partition = empty_partition_check > 0
+            else:
+                # If no empty partition flag exists, determine emptiness by checking actual data count
+                has_empty_partition = daily_actual_data_count == 0
+        except Exception as e:
+            logging.warning(f"Error checking empty partition status: {e}")
             has_empty_partition = False
         
         if daily_actual_data_count > 0:
