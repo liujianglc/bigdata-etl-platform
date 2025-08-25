@@ -98,6 +98,10 @@ def run_dwd_orders_etl(**context):
             .config("spark.sql.parquet.cacheMetadata", "false") \
             .config("spark.sql.hive.metastorePartitionPruning", "true") \
             .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
+            .config("spark.sql.parquet.writeLegacyFormat", "false") \
+            .config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MILLIS") \
+            .config("spark.sql.parquet.datetimeRebaseModeInWrite", "CORRECTED") \
+            .config("spark.sql.hive.convertMetastoreParquet", "false") \
             .enableHiveSupport() \
             .getOrCreate()
         logging.info("✅ Spark session created successfully.")
@@ -349,6 +353,10 @@ def create_orders_hive_views(**context):
             .config("spark.sql.parquet.cacheMetadata", "false") \
             .config("spark.sql.hive.metastorePartitionPruning", "true") \
             .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
+            .config("spark.sql.parquet.writeLegacyFormat", "false") \
+            .config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MILLIS") \
+            .config("spark.sql.parquet.datetimeRebaseModeInWrite", "CORRECTED") \
+            .config("spark.sql.hive.convertMetastoreParquet", "false") \
             .enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
         
