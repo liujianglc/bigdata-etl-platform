@@ -157,8 +157,8 @@ def run_dwd_orders_etl(**context):
                 StructField("Status", StringType(), True),
                 StructField("PaymentMethod", StringType(), True),
                 StructField("PaymentStatus", StringType(), True),
-                StructField("TotalAmount", DecimalType(20,2), True),
-                StructField("Discount", DecimalType(20,2), True),
+                StructField("TotalAmount", DecimalType(10,2), True),
+                StructField("Discount", DecimalType(5,2), True),
                 StructField("ShippingAddress", StringType(), True),
                 StructField("ShippingMethod", StringType(), True),
                 StructField("Remarks", StringType(), True),
@@ -180,7 +180,7 @@ def run_dwd_orders_etl(**context):
                 StructField("OrderDay", IntegerType(), True),
                 StructField("OrderDayOfWeek", IntegerType(), True),
                 StructField("OrderQuarter", IntegerType(), True),
-                StructField("NetAmount", DecimalType(20,2), True),
+                StructField("NetAmount", DecimalType(10,2), True),
                 StructField("OrderSizeCategory", StringType(), True),
                 StructField("OrderPriority", StringType(), True),
                 StructField("DataQualityScore", IntegerType(), True),
@@ -220,10 +220,6 @@ def run_dwd_orders_etl(**context):
         df = df.withColumn("OrderStatus", coalesce(order_status_map[col("Status")], col("Status")))
         df = df.withColumn("PaymentStatus", coalesce(payment_status_map[col("PaymentStatus")], col("PaymentStatus")))
 
-        # Cast decimal columns to avoid precision issues
-        df = df.withColumn("TotalAmount", col("TotalAmount").cast("decimal(20,2)")) \
-               .withColumn("Discount", col("Discount").cast("decimal(20,2)"))
-
         df = df.withColumn("LeadTimeDays", datediff(col("RequiredDate"), col("OrderDate"))) \
                .withColumn("ProcessingDays", datediff(col("ShippedDate"), col("CreatedDate"))) \
                .withColumn("IsDelayed", col("ShippedDate") > col("RequiredDate")) \
@@ -239,7 +235,7 @@ def run_dwd_orders_etl(**context):
                .withColumn("OrderDay", dayofmonth(col("OrderDate"))) \
                .withColumn("OrderDayOfWeek", dayofweek(col("OrderDate"))) \
                .withColumn("OrderQuarter", quarter(col("OrderDate"))) \
-               .withColumn("NetAmount", (col("TotalAmount") - col("Discount")).cast("decimal(20,2)")) \
+               .withColumn("NetAmount", (col("TotalAmount") - col("Discount")) \
                .withColumn("OrderSizeCategory",
                          when(col("TotalAmount") >= 10000, "Large")
                          .when(col("TotalAmount") >= 5000, "Medium")

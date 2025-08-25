@@ -205,9 +205,9 @@ def run_dwd_orderdetails_etl(**context):
                 StructField("OrderID", IntegerType(), True),
                 StructField("ProductID", IntegerType(), True),
                 StructField("Quantity", IntegerType(), True),
-                StructField("UnitPrice", DecimalType(20,2), True),
+                StructField("UnitPrice", DecimalType(10,2), True),
                 StructField("Discount", DecimalType(5,2), True),
-                StructField("Amount", DecimalType(20,2), True),
+                StructField("Amount", DecimalType(10,2), True),
                 StructField("WarehouseID", IntegerType(), True),
                 StructField("Status", StringType(), True),
                 StructField("CreatedDate", TimestampType(), True),
@@ -228,9 +228,9 @@ def run_dwd_orderdetails_etl(**context):
                 StructField("PaymentStatus", StringType(), True),
                 # Transformed columns
                 StructField("OrderDetailStatus", StringType(), True),
-                StructField("LineTotal", DecimalType(20,2), True),
-                StructField("DiscountAmount", DecimalType(20,2), True),
-                StructField("NetAmount", DecimalType(20,2), True),
+                StructField("LineTotal", DecimalType(10,2), True),
+                StructField("DiscountAmount", DecimalType(10,2), True),
+                StructField("NetAmount", DecimalType(10,2), True),
                 StructField("PriceCategory", StringType(), True),
                 StructField("IsHighValue", BooleanType(), True),
                 StructField("IsDiscounted", BooleanType(), True),
@@ -438,10 +438,6 @@ def create_orderdetails_hive_views(**context):
             """
         ]
         for v in views: spark.sql(v)
-
-        spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orderdetails")
-        spark.sql("REFRESH TABLE dwd_db.dwd_orderdetails")
-        spark.catalog.clearCache()
         logging.info(f"✅ Successfully created {len(views)} views.")
     except Exception as e:
         logging.error(f"View creation failed: {e}", exc_info=True)
