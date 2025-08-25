@@ -59,19 +59,32 @@ def run_dws_orderdetails_analytics_etl(**context):
             logging.warning(f"Could not drop existing tables: {e}")
 
         # Load DWD data and filter out empty partitions (if column exists)
-        base_table = spark.table("dwd_db.dwd_orderdetails")
-        table_columns = [field.name for field in base_table.schema.fields]
+        # First check table schema before creating any DataFrame operations
+        try:
+            spark.sql("REFRESH TABLE dwd_db.dwd_orderdetails")
+        except:
+            pass
+            
+        table_columns_query = spark.sql("DESCRIBE TABLE dwd_db.dwd_orderdetails")
+        table_columns = [row['col_name'] for row in table_columns_query.collect() if row['col_name'] not in ['', '# Partition Information', '# col_name']]
         has_empty_partition_flag = 'is_empty_partition' in table_columns
+        
+        logging.info(f"Available columns in dwd_orderdetails: {table_columns}")
+        logging.info(f"Has is_empty_partition column: {has_empty_partition_flag}")
         
         if has_empty_partition_flag:
             logging.info("Found is_empty_partition column, applying filter")
-            dwd_df_30d = base_table.filter(
-                col("dt").between(start_date_30d, batch_date) &
-                (col("is_empty_partition").isNull() | (col("is_empty_partition") == False))
-            )
+            dwd_df_30d = spark.sql(f"""
+                SELECT * FROM dwd_db.dwd_orderdetails 
+                WHERE dt BETWEEN '{start_date_30d}' AND '{batch_date}'
+                AND (is_empty_partition IS NULL OR is_empty_partition = false)
+            """)
         else:
             logging.info("is_empty_partition column not found, skipping empty partition filter")
-            dwd_df_30d = base_table.filter(col("dt").between(start_date_30d, batch_date))
+            dwd_df_30d = spark.sql(f"""
+                SELECT * FROM dwd_db.dwd_orderdetails 
+                WHERE dt BETWEEN '{start_date_30d}' AND '{batch_date}'
+            """)
         dwd_df_30d.cache()
 
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
