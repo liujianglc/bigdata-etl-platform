@@ -82,7 +82,7 @@ def run_dwd_orderdetails_etl(**context):
     from pyspark.sql import SparkSession, Window
     from pyspark.sql.functions import (
         col, when, year, month, dayofmonth, dayofweek, quarter, coalesce, lit, 
-        min, max, current_timestamp, length, avg, spark_sum, spark_count,
+        min, max, current_timestamp, length, avg, sum as spark_sum, count as spark_count,
         create_map
     )
 
