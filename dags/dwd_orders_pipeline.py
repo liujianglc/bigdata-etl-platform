@@ -158,7 +158,7 @@ def run_dwd_orders_etl(**context):
                 StructField("PaymentMethod", StringType(), True),
                 StructField("PaymentStatus", StringType(), True),
                 StructField("TotalAmount", DecimalType(10,2), True),
-                StructField("Discount", DecimalType(5,2), True),
+                StructField("Discount", DecimalType(10,2), True),
                 StructField("ShippingAddress", StringType(), True),
                 StructField("ShippingMethod", StringType(), True),
                 StructField("Remarks", StringType(), True),
@@ -235,7 +235,7 @@ def run_dwd_orders_etl(**context):
                .withColumn("OrderDay", dayofmonth(col("OrderDate"))) \
                .withColumn("OrderDayOfWeek", dayofweek(col("OrderDate"))) \
                .withColumn("OrderQuarter", quarter(col("OrderDate"))) \
-               .withColumn("NetAmount", (col("TotalAmount") - col("Discount")) \
+               .withColumn("NetAmount", (col("TotalAmount") - col("Discount"))) \
                .withColumn("OrderSizeCategory",
                          when(col("TotalAmount") >= 10000, "Large")
                          .when(col("TotalAmount") >= 5000, "Medium")
