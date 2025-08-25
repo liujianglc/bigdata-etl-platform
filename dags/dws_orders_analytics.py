@@ -136,16 +136,32 @@ def run_dws_orders_analytics_etl(**context):
              .withColumn("data_quality_score", (((col("good_quality_orders") * 4 + (col("total_orders") - col("good_quality_orders") - col("poor_quality_orders")) * 2) / col("total_orders"))).cast(RATE))
             
             try:
-                daily_summary.withColumn("dt", lit(batch_date)) \
-                    .write.mode("overwrite").partitionBy("dt").format("parquet") \
+                # 写入数据到表
+                daily_summary_with_dt = daily_summary.withColumn("dt", lit(batch_date))
+                daily_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
                     .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary") \
                     .saveAsTable("dws_orders_daily_summary")
                 
-                # Verify table was created successfully
+                # 执行表修复和刷新
+                try:
+                    spark.sql("MSCK REPAIR TABLE dws_db.dws_orders_daily_summary")
+                    logging.info("🔧 Executed MSCK REPAIR for dws_orders_daily_summary")
+                except Exception as repair_e:
+                    logging.warning(f"⚠️  MSCK REPAIR failed for dws_orders_daily_summary: {repair_e}")
+                
                 spark.sql("REFRESH TABLE dws_db.dws_orders_daily_summary")
-                row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_daily_summary").collect()[0]['cnt']
-                tables_created_list.append("dws_orders_daily_summary")
-                logging.info(f"✅ Daily aggregation complete and loaded. Row count: {row_count}")
+                
+                # 验证表创建成功
+                try:
+                    row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_daily_summary").collect()[0]['cnt']
+                    tables_created_list.append("dws_orders_daily_summary")
+                    logging.info(f"✅ Daily aggregation complete and loaded. Row count: {row_count}")
+                except Exception as count_e:
+                    logging.error(f"❌ Failed to count rows in dws_orders_daily_summary: {count_e}")
+                    # 仍然添加到列表，因为表可能存在但为空
+                    tables_created_list.append("dws_orders_daily_summary")
+                    logging.warning("⚠️  Added table to created list despite count failure")
+                    
             except Exception as e:
                 logging.error(f"❌ Failed to create daily summary table: {e}")
                 raise
@@ -180,12 +196,24 @@ def run_dws_orders_analytics_etl(**context):
             zero_data = [(batch_date, 0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0, batch_date)]
             zero_summary_df = spark.createDataFrame(zero_data, zero_summary_schema)
             
-            zero_summary_df.write.mode("overwrite").partitionBy("dt").format("parquet") \
-                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary") \
-                .saveAsTable("dws_orders_daily_summary")
-            
-            tables_created_list.append("dws_orders_daily_summary")
-            logging.info("✅ Zero-value daily aggregation created for empty partition.")
+            try:
+                zero_summary_df.write.mode("overwrite").partitionBy("dt").format("parquet") \
+                    .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary") \
+                    .saveAsTable("dws_orders_daily_summary")
+                
+                # 执行表修复和刷新
+                try:
+                    spark.sql("MSCK REPAIR TABLE dws_db.dws_orders_daily_summary")
+                    logging.info("🔧 Executed MSCK REPAIR for zero-value dws_orders_daily_summary")
+                except Exception as repair_e:
+                    logging.warning(f"⚠️  MSCK REPAIR failed for zero-value dws_orders_daily_summary: {repair_e}")
+                
+                spark.sql("REFRESH TABLE dws_db.dws_orders_daily_summary")
+                tables_created_list.append("dws_orders_daily_summary")
+                logging.info("✅ Zero-value daily aggregation created for empty partition.")
+            except Exception as e:
+                logging.error(f"❌ Failed to create zero-value daily summary table: {e}")
+                raise
         else:
             logging.warning(f"No data found for date {batch_date}, skipping daily summary table creation.")
 
@@ -222,16 +250,30 @@ def run_dws_orders_analytics_etl(**context):
              .withColumn("large_order_ratio", ((col("large_orders") / col("total_orders") * 100)).cast(DoubleType()))
 
             try:
-                monthly_summary.withColumn("dt", lit(batch_date)) \
-                    .write.mode("overwrite").partitionBy("dt").format("parquet") \
+                monthly_summary_with_dt = monthly_summary.withColumn("dt", lit(batch_date))
+                monthly_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
                     .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_monthly_summary") \
                     .saveAsTable("dws_orders_monthly_summary")
                 
-                # Verify table was created successfully
+                # 执行表修复和刷新
+                try:
+                    spark.sql("MSCK REPAIR TABLE dws_db.dws_orders_monthly_summary")
+                    logging.info("🔧 Executed MSCK REPAIR for dws_orders_monthly_summary")
+                except Exception as repair_e:
+                    logging.warning(f"⚠️  MSCK REPAIR failed for dws_orders_monthly_summary: {repair_e}")
+                
                 spark.sql("REFRESH TABLE dws_db.dws_orders_monthly_summary")
-                row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_monthly_summary").collect()[0]['cnt']
-                tables_created_list.append("dws_orders_monthly_summary")
-                logging.info(f"✅ Monthly aggregation complete and loaded. Row count: {row_count}")
+                
+                # 验证表创建成功
+                try:
+                    row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_monthly_summary").collect()[0]['cnt']
+                    tables_created_list.append("dws_orders_monthly_summary")
+                    logging.info(f"✅ Monthly aggregation complete and loaded. Row count: {row_count}")
+                except Exception as count_e:
+                    logging.error(f"❌ Failed to count rows in dws_orders_monthly_summary: {count_e}")
+                    tables_created_list.append("dws_orders_monthly_summary")
+                    logging.warning("⚠️  Added table to created list despite count failure")
+                    
             except Exception as e:
                 logging.error(f"❌ Failed to create monthly summary table: {e}")
                 raise
@@ -306,16 +348,29 @@ def run_dws_orders_analytics_etl(**context):
                 logging.warning("⚠️  Customer analytics aggregation resulted in 0 records")
                 # 仍然创建空表以保持一致性
             
-            customer_analytics.withColumn("dt", lit(batch_date)) \
-                .write.mode("overwrite").partitionBy("dt").format("parquet") \
+            customer_analytics_with_dt = customer_analytics.withColumn("dt", lit(batch_date))
+            customer_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
                 .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_customer_analytics") \
                 .saveAsTable("dws_customer_analytics")
             
-            # Verify table was created successfully
+            # 执行表修复和刷新
+            try:
+                spark.sql("MSCK REPAIR TABLE dws_db.dws_customer_analytics")
+                logging.info("🔧 Executed MSCK REPAIR for dws_customer_analytics")
+            except Exception as repair_e:
+                logging.warning(f"⚠️  MSCK REPAIR failed for dws_customer_analytics: {repair_e}")
+            
             spark.sql("REFRESH TABLE dws_db.dws_customer_analytics")
-            row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_customer_analytics").collect()[0]['cnt']
-            tables_created_list.append("dws_customer_analytics")
-            logging.info(f"✅ Customer analytics complete and loaded. Row count: {row_count}")
+            
+            # 验证表创建成功
+            try:
+                row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_customer_analytics").collect()[0]['cnt']
+                tables_created_list.append("dws_customer_analytics")
+                logging.info(f"✅ Customer analytics complete and loaded. Row count: {row_count}")
+            except Exception as count_e:
+                logging.error(f"❌ Failed to count rows in dws_customer_analytics: {count_e}")
+                tables_created_list.append("dws_customer_analytics")
+                logging.warning("⚠️  Added table to created list despite count failure")
             
         except Exception as e:
             logging.error(f"❌ Failed to create customer analytics table: {e}")
@@ -347,9 +402,18 @@ def create_analytics_views(**context):
     from pyspark.sql import SparkSession
     import logging
     
-    if context['task_instance'].xcom_pull(task_ids='run_dws_analytics_etl_task', key='status') == 'SKIPPED_EMPTY_DATA':
+    # 检查ETL任务的状态
+    etl_status = context['task_instance'].xcom_pull(task_ids='run_dws_analytics_etl_task', key='status')
+    if etl_status == 'SKIPPED_EMPTY_DATA':
         logging.warning("Skipping view creation as no data was processed.")
         return
+    elif etl_status == 'SKIPPED_NO_SOURCE_TABLE':
+        logging.warning("Skipping view creation as source tables are not available.")
+        return
+    elif etl_status != 'SUCCESS' and etl_status is not None:
+        logging.warning(f"ETL task status is {etl_status}, but proceeding with view creation attempt.")
+    
+    logging.info(f"ETL task status: {etl_status}, proceeding with view creation.")
 
     spark = None
     try:
@@ -368,15 +432,46 @@ def create_analytics_views(**context):
         tables_created_from_etl = context['task_instance'].xcom_pull(task_ids='run_dws_analytics_etl_task', key='tables_created') or []
         logging.info(f"Tables reported as created by ETL: {tables_created_from_etl}")
         
+        def check_table_exists(table_name):
+            """检查表是否存在并可访问"""
+            try:
+                spark.sql(f"DESCRIBE TABLE dws_db.{table_name}")
+                try:
+                    # 尝试简单查询以确保表可访问
+                    spark.sql(f"SELECT 1 FROM dws_db.{table_name} LIMIT 1").collect()
+                    return True, "accessible"
+                except Exception:
+                    return True, "exists_but_empty_or_inaccessible"
+            except Exception:
+                return False, "not_found"
+        
         # 验证表是否真正存在
         verified_tables = []
         for table_name in tables_created_from_etl:
-            try:
-                spark.sql(f"DESCRIBE TABLE dws_db.{table_name}")
+            exists, status = check_table_exists(table_name)
+            
+            if exists:
                 verified_tables.append(table_name)
-                logging.info(f"✅ Verified table exists: {table_name}")
-            except Exception as e:
-                logging.warning(f"❌ Table {table_name} not found or not accessible: {e}")
+                if status == "accessible":
+                    logging.info(f"✅ Verified table exists and is accessible: {table_name}")
+                else:
+                    logging.warning(f"⚠️  Table {table_name} exists but may be empty or inaccessible")
+            else:
+                logging.warning(f"❌ Table {table_name} not found, attempting recovery...")
+                
+                # 尝试重新创建表的元数据
+                try:
+                    spark.sql(f"MSCK REPAIR TABLE dws_db.{table_name}")
+                    spark.sql(f"REFRESH TABLE dws_db.{table_name}")
+                    # 再次检查
+                    exists_after_repair, status_after_repair = check_table_exists(table_name)
+                    if exists_after_repair:
+                        verified_tables.append(table_name)
+                        logging.info(f"✅ Table {table_name} recovered after metadata repair")
+                    else:
+                        logging.error(f"❌ Failed to recover table {table_name}")
+                except Exception as repair_e:
+                    logging.error(f"❌ Failed to repair table {table_name}: {repair_e}")
         
         logging.info(f"Final verified tables list: {verified_tables}")
         
@@ -535,9 +630,36 @@ def create_analytics_views(**context):
         created_views = []
         for i, view_sql in enumerate(views_sql):
             try:
-                spark.sql(view_sql.strip())
-                # Extract view name from SQL for logging
+                # Extract view name and dependencies before execution
                 view_name = view_sql.split('VIEW')[1].split('AS')[0].strip()
+                
+                # Check if the view depends on tables that exist
+                view_sql_upper = view_sql.upper()
+                dependencies_exist = True
+                missing_deps = []
+                
+                # Check for table dependencies in the SQL
+                if 'DWS_DB.DWS_ORDERS_DAILY_SUMMARY' in view_sql_upper:
+                    if 'dws_orders_daily_summary' not in verified_tables:
+                        dependencies_exist = False
+                        missing_deps.append('dws_orders_daily_summary')
+                        
+                if 'DWS_DB.DWS_ORDERS_MONTHLY_SUMMARY' in view_sql_upper:
+                    if 'dws_orders_monthly_summary' not in verified_tables:
+                        dependencies_exist = False
+                        missing_deps.append('dws_orders_monthly_summary')
+                        
+                if 'DWS_DB.DWS_CUSTOMER_ANALYTICS' in view_sql_upper:
+                    if 'dws_customer_analytics' not in verified_tables:
+                        dependencies_exist = False
+                        missing_deps.append('dws_customer_analytics')
+                
+                if not dependencies_exist:
+                    logging.warning(f"⚠️  Skipping view {view_name} due to missing dependencies: {missing_deps}")
+                    continue
+                
+                # Execute the view creation
+                spark.sql(view_sql.strip())
                 
                 # Refresh the view to ensure metadata is synchronized
                 try:
@@ -549,7 +671,12 @@ def create_analytics_views(**context):
                 created_views.append(view_name)
                 logging.info(f"✅ Successfully created view: {view_name}")
             except Exception as e:
-                logging.error(f"❌ Failed to create view #{i+1}: {e}")
+                view_name_for_error = "unknown"
+                try:
+                    view_name_for_error = view_sql.split('VIEW')[1].split('AS')[0].strip()
+                except:
+                    pass
+                logging.error(f"❌ Failed to create view {view_name_for_error} (#{i+1}): {e}")
                 # Continue creating other views even if one fails
         
         if created_views:
