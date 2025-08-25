@@ -347,7 +347,13 @@ def create_orders_hive_views(**context):
     from pyspark.sql import SparkSession
     spark = None
     try:
-        spark = SparkSession.builder.appName("CreateDWDOrderViews").config("spark.sql.catalogImplementation","hive").config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083").enableHiveSupport().getOrCreate()
+        spark = SparkSession.builder.appName("CreateDWDOrderViews") \
+            .config("spark.sql.catalogImplementation","hive") \
+            .config("spark.hadoop.hive.metastore.uris","thrift://hive-metastore:9083") \
+            .config("spark.sql.parquet.cacheMetadata", "false") \
+            .config("spark.sql.hive.metastorePartitionPruning", "true") \
+            .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
+            .enableHiveSupport().getOrCreate()
         spark.sql("USE dwd_db")
         
         # Refresh table metadata before checking schema
