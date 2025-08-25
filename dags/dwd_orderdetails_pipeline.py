@@ -98,6 +98,9 @@ def run_dwd_orderdetails_etl(**context):
             .config("spark.executor.memory", os.getenv('SPARK_EXECUTOR_MEMORY', '4g')) \
             .config("spark.sql.adaptive.enabled", "true") \
             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+            .config("spark.sql.parquet.cacheMetadata", "false") \
+            .config("spark.sql.hive.metastorePartitionPruning", "true") \
+            .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
             .enableHiveSupport() \
             .getOrCreate()
         logging.info("✅ Spark session created successfully.")
