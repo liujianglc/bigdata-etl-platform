@@ -141,6 +141,42 @@ def run_dwd_orders_etl(**context):
         logging.info(f"Executing dynamically generated query:\n{query}")
         df = spark.sql(query)
         
+        # Handle schema compatibility for date columns
+        # Convert any INT64 date columns to proper date types
+        from pyspark.sql.types import DateType, TimestampType
+        
+        try:
+            df_types = dict(df.dtypes)
+            logging.info(f"Current DataFrame schema: {df_types}")
+            
+            # Check and fix OrderDate column type if needed
+            order_date_type = df_types.get('OrderDate')
+            if order_date_type and ('int' in order_date_type.lower() or 'long' in order_date_type.lower()):
+                logging.info(f"Converting OrderDate from {order_date_type} to DateType for schema compatibility")
+                df = df.withColumn("OrderDate", col("OrderDate").cast(DateType()))
+            
+            # Check and fix other date columns
+            for date_col in ['RequiredDate', 'ShippedDate']:
+                if date_col in df_types:
+                    col_type = df_types.get(date_col)
+                    if col_type and ('int' in col_type.lower() or 'long' in col_type.lower()):
+                        logging.info(f"Converting {date_col} from {col_type} to DateType for schema compatibility")
+                        df = df.withColumn(date_col, col(date_col).cast(DateType()))
+            
+            # Check and fix timestamp columns
+            for ts_col in ['CreatedDate', 'UpdatedDate']:
+                if ts_col in df_types:
+                    col_type = df_types.get(ts_col)
+                    if col_type and ('int' in col_type.lower() or 'long' in col_type.lower()):
+                        logging.info(f"Converting {ts_col} from {col_type} to TimestampType for schema compatibility")
+                        df = df.withColumn(ts_col, col(ts_col).cast(TimestampType()))
+                        
+            logging.info("Schema compatibility check completed")
+            
+        except Exception as schema_e:
+            logging.warning(f"Schema compatibility conversion failed: {schema_e}")
+            # Continue with original DataFrame if conversion fails
+        
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
         record_count = df.limit(1).count()
         if record_count == 0:
@@ -294,6 +330,30 @@ def run_dwd_orders_etl(**context):
             spark.catalog.uncacheTable("dwd_db.dwd_orders")
         except:
             pass  # Table might not be cached
+        
+        # Handle schema compatibility by dropping problematic partition if it exists
+        try:
+            # Check if table exists and has the problematic partition
+            existing_partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
+            partition_to_drop = f"dt={batch_date}"
+            
+            if any(partition_to_drop in str(p) for p in existing_partitions):
+                logging.info(f"Dropping existing partition {partition_to_drop} to resolve schema conflicts")
+                spark.sql(f"ALTER TABLE {table_name} DROP IF EXISTS PARTITION (dt='{batch_date}')")
+                
+                # Also remove the HDFS directory for this partition
+                partition_path = f"{location}/dt={batch_date}"
+                try:
+                    spark.sql(f"dfs -rm -r -f {partition_path}")
+                    logging.info(f"Removed HDFS partition directory: {partition_path}")
+                except Exception as hdfs_e:
+                    logging.warning(f"Could not remove HDFS partition directory: {hdfs_e}")
+                    
+        except Exception as e:
+            if "Table or view not found" in str(e):
+                logging.info("Table doesn't exist yet, will create new one")
+            else:
+                logging.warning(f"Could not check/drop existing partition: {e}")
         
         # Use a more robust write approach
         df_with_partition = df.withColumn('dt', lit(batch_date))
