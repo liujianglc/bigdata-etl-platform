@@ -82,7 +82,10 @@ def run_dws_orders_analytics_etl(**context):
         spark.conf.set("spark.sql.parquet.mergeSchema", "true")
         
         try:
-            # First, try to get existing partitions from Hive metastore
+            # Skip Hive table approach due to schema conflicts, go directly to Parquet files
+            logging.info("🔄 Using direct HDFS path reading to avoid Hive schema conflicts...")
+            
+            # Get existing partitions from Hive metastore for reference
             try:
                 existing_partitions_df = spark.sql("SHOW PARTITIONS dwd_db.dwd_orders")
                 existing_partitions = [row['partition'].split('=')[1] for row in existing_partitions_df.collect()]
@@ -108,39 +111,53 @@ def run_dws_orders_analytics_etl(**context):
                     context['task_instance'].xcom_push(key='status', value='SKIPPED_NO_PARTITIONS')
                     return
                 
-                # Use Hive table with partition filter to avoid schema conflicts
-                partition_filter = " OR ".join([f"dt = '{dt}'" for dt in valid_partitions])
-                dwd_df_raw = spark.sql(f"""
-                    SELECT * FROM dwd_db.dwd_orders 
-                    WHERE ({partition_filter})
-                    AND (is_empty_partition IS NULL OR is_empty_partition = false)
-                """)
-                
-                logging.info(f"✅ Successfully loaded data using Hive table with partition filter")
-                
-            except Exception as hive_error:
-                logging.warning(f"⚠️  Could not use Hive metastore approach: {hive_error}")
-                logging.info("🔄 Falling back to direct HDFS path reading...")
-                
-                # Fallback: Read directly from HDFS path
+                # Read directly from HDFS paths for valid partitions
                 hdfs_path = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
-                
-                # Check which partitions actually exist on HDFS
-                
                 existing_partition_paths = []
+                
+                for partition_date in valid_partitions:
+                    partition_path = f"{hdfs_path}/dt={partition_date}"
+                    
+                    # Check if partition path exists and has data
+                    try:
+                        test_df = spark.read.option("recursiveFileLookup", "true").parquet(partition_path).limit(1)
+                        test_df.count()  # Force evaluation
+                        existing_partition_paths.append(partition_path)
+                        logging.info(f"✅ Found partition: dt={partition_date}")
+                    except Exception:
+                        logging.info(f"⚠️  Partition not accessible: dt={partition_date}")
+                        continue
+                
+                if not existing_partition_paths:
+                    logging.error("❌ No accessible partition paths found on HDFS")
+                    context['task_instance'].xcom_push(key='status', value='SKIPPED_NO_PARTITIONS')
+                    return
+                
+                logging.info(f"📂 Reading from {len(existing_partition_paths)} accessible partitions")
+                
+                # Read parquet files directly with schema merging
+                dwd_df_raw = spark.read.option("mergeSchema", "true").option("recursiveFileLookup", "true").parquet(*existing_partition_paths)
+                
+            except Exception as partition_error:
+                logging.warning(f"⚠️  Could not get partitions from Hive: {partition_error}")
+                logging.info("🔄 Trying to scan all possible dates in range...")
+                
+                # Fallback: Check all dates in range
+                hdfs_path = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
+                existing_partition_paths = []
+                
                 for i in range((datetime.strptime(batch_date, '%Y-%m-%d') - datetime.strptime(start_date_30d, '%Y-%m-%d')).days + 1):
                     partition_date = (datetime.strptime(start_date_30d, '%Y-%m-%d') + timedelta(days=i)).strftime('%Y-%m-%d')
                     partition_path = f"{hdfs_path}/dt={partition_date}"
                     
                     # Check if partition path exists
                     try:
-                        # Try to list files in the partition path
                         test_df = spark.read.option("recursiveFileLookup", "true").parquet(partition_path).limit(1)
                         test_df.count()  # Force evaluation
                         existing_partition_paths.append(partition_path)
                         logging.info(f"✅ Found partition: dt={partition_date}")
                     except Exception:
-                        logging.info(f"⚠️  Partition not found or empty: dt={partition_date}")
+                        logging.info(f"⚠️  Partition not found: dt={partition_date}")
                         continue
                 
                 if not existing_partition_paths:
@@ -175,16 +192,48 @@ def run_dws_orders_analytics_etl(**context):
                     orderdate_field_type = str(field.dataType)
                     logging.info(f"OrderDate field type in Parquet: {orderdate_field_type}")
             
-            # Always convert OrderDate from INT64 to proper DATE format
-            logging.info("🔄 Converting OrderDate from INT64 to DATE format")
-            dwd_df_30d = dwd_df_raw.withColumn(
-                "OrderDate",
-                when(col("OrderDate").isNull(), None)
-                .when(col("OrderDate") > 1000000000000, to_date(from_unixtime(col("OrderDate") / 1000)))  # milliseconds
-                .when(col("OrderDate") > 1000000000, to_date(from_unixtime(col("OrderDate"))))  # seconds  
-                .when(col("OrderDate") > 19000000, to_date(col("OrderDate").cast("string"), "yyyyMMdd"))  # YYYYMMDD format
-                .otherwise(to_date(col("OrderDate").cast("string")))
-            )
+            # Check if OrderDate needs conversion based on actual data type
+            logging.info("🔄 Checking OrderDate data type and converting if needed")
+            
+            # Get the actual data type of OrderDate column
+            orderdate_field = None
+            for field in dwd_df_raw.schema.fields:
+                if field.name == "OrderDate":
+                    orderdate_field = field
+                    break
+            
+            if orderdate_field:
+                orderdate_type = str(orderdate_field.dataType).lower()
+                logging.info(f"OrderDate actual type: {orderdate_type}")
+                
+                if "long" in orderdate_type or "int" in orderdate_type or "bigint" in orderdate_type:
+                    # OrderDate is numeric, convert to date
+                    logging.info("🔄 Converting OrderDate from numeric to DATE format")
+                    dwd_df_30d = dwd_df_raw.withColumn(
+                        "OrderDate",
+                        when(col("OrderDate").isNull(), None)
+                        .when(col("OrderDate") > 1000000000000, to_date(from_unixtime(col("OrderDate") / 1000)))  # milliseconds
+                        .when(col("OrderDate") > 1000000000, to_date(from_unixtime(col("OrderDate"))))  # seconds  
+                        .when(col("OrderDate") > 19000000, to_date(col("OrderDate").cast("string"), "yyyyMMdd"))  # YYYYMMDD format
+                        .otherwise(to_date(col("OrderDate").cast("string")))
+                    )
+                elif "date" in orderdate_type:
+                    # OrderDate is already a date, use as-is
+                    logging.info("✅ OrderDate is already in DATE format")
+                    dwd_df_30d = dwd_df_raw
+                else:
+                    # OrderDate is string or other type, try to convert
+                    logging.info("🔄 Converting OrderDate from string/other to DATE format")
+                    dwd_df_30d = dwd_df_raw.withColumn(
+                        "OrderDate",
+                        when(col("OrderDate").isNull(), None)
+                        .when(col("OrderDate").rlike("^\\d{4}-\\d{2}-\\d{2}$"), to_date(col("OrderDate"), "yyyy-MM-dd"))
+                        .when(col("OrderDate").rlike("^\\d{8}$"), to_date(col("OrderDate"), "yyyyMMdd"))
+                        .otherwise(to_date(col("OrderDate")))
+                    )
+            else:
+                logging.warning("⚠️  OrderDate column not found, using raw data")
+                dwd_df_30d = dwd_df_raw
             
             # Ensure other numeric fields are properly typed with null handling
             dwd_df_30d = dwd_df_30d.withColumn("TotalAmount", 
