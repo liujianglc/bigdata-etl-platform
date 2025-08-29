@@ -82,20 +82,76 @@ def run_dws_orders_analytics_etl(**context):
         spark.conf.set("spark.sql.parquet.mergeSchema", "true")
         
         try:
-            # Read directly from HDFS path to bypass Hive metastore schema conflicts
-            hdfs_path = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
-            
-            # Get list of partitions in date range
-            partitions_to_read = []
-            for i in range((datetime.strptime(batch_date, '%Y-%m-%d') - datetime.strptime(start_date_30d, '%Y-%m-%d')).days + 1):
-                partition_date = (datetime.strptime(start_date_30d, '%Y-%m-%d') + timedelta(days=i)).strftime('%Y-%m-%d')
-                partition_path = f"{hdfs_path}/dt={partition_date}"
-                partitions_to_read.append(partition_path)
-            
-            logging.info(f"📂 Reading from {len(partitions_to_read)} partitions: {start_date_30d} to {batch_date}")
-            
-            # Read parquet files directly with schema merging
-            dwd_df_raw = spark.read.option("mergeSchema", "true").option("recursiveFileLookup", "true").parquet(*partitions_to_read)
+            # First, try to get existing partitions from Hive metastore
+            try:
+                existing_partitions_df = spark.sql("SHOW PARTITIONS dwd_db.dwd_orders")
+                existing_partitions = [row['partition'].split('=')[1] for row in existing_partitions_df.collect()]
+                logging.info(f"📋 Found {len(existing_partitions)} existing partitions in Hive metastore")
+                
+                # Filter partitions within our date range
+                start_date_obj = datetime.strptime(start_date_30d, '%Y-%m-%d')
+                batch_date_obj = datetime.strptime(batch_date, '%Y-%m-%d')
+                
+                valid_partitions = []
+                for partition_date_str in existing_partitions:
+                    try:
+                        partition_date_obj = datetime.strptime(partition_date_str, '%Y-%m-%d')
+                        if start_date_obj <= partition_date_obj <= batch_date_obj:
+                            valid_partitions.append(partition_date_str)
+                    except ValueError:
+                        continue
+                
+                logging.info(f"📅 Valid partitions in date range: {valid_partitions}")
+                
+                if not valid_partitions:
+                    logging.warning("No valid partitions found in the specified date range")
+                    context['task_instance'].xcom_push(key='status', value='SKIPPED_NO_PARTITIONS')
+                    return
+                
+                # Use Hive table with partition filter to avoid schema conflicts
+                partition_filter = " OR ".join([f"dt = '{dt}'" for dt in valid_partitions])
+                dwd_df_raw = spark.sql(f"""
+                    SELECT * FROM dwd_db.dwd_orders 
+                    WHERE ({partition_filter})
+                    AND (is_empty_partition IS NULL OR is_empty_partition = false)
+                """)
+                
+                logging.info(f"✅ Successfully loaded data using Hive table with partition filter")
+                
+            except Exception as hive_error:
+                logging.warning(f"⚠️  Could not use Hive metastore approach: {hive_error}")
+                logging.info("🔄 Falling back to direct HDFS path reading...")
+                
+                # Fallback: Read directly from HDFS path
+                hdfs_path = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
+                
+                # Check which partitions actually exist on HDFS
+                
+                existing_partition_paths = []
+                for i in range((datetime.strptime(batch_date, '%Y-%m-%d') - datetime.strptime(start_date_30d, '%Y-%m-%d')).days + 1):
+                    partition_date = (datetime.strptime(start_date_30d, '%Y-%m-%d') + timedelta(days=i)).strftime('%Y-%m-%d')
+                    partition_path = f"{hdfs_path}/dt={partition_date}"
+                    
+                    # Check if partition path exists
+                    try:
+                        # Try to list files in the partition path
+                        test_df = spark.read.option("recursiveFileLookup", "true").parquet(partition_path).limit(1)
+                        test_df.count()  # Force evaluation
+                        existing_partition_paths.append(partition_path)
+                        logging.info(f"✅ Found partition: dt={partition_date}")
+                    except Exception:
+                        logging.info(f"⚠️  Partition not found or empty: dt={partition_date}")
+                        continue
+                
+                if not existing_partition_paths:
+                    logging.error("❌ No valid partition paths found on HDFS")
+                    context['task_instance'].xcom_push(key='status', value='SKIPPED_NO_PARTITIONS')
+                    return
+                
+                logging.info(f"📂 Reading from {len(existing_partition_paths)} existing partitions")
+                
+                # Read parquet files directly with schema merging
+                dwd_df_raw = spark.read.option("mergeSchema", "true").option("recursiveFileLookup", "true").parquet(*existing_partition_paths)
             
             # Add dt column if missing (extract from file path)
             if "dt" not in dwd_df_raw.columns:
