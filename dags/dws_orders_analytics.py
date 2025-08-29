@@ -14,7 +14,7 @@ default_args = {
 def run_dws_orders_analytics_etl(**context):
     """A single, optimized Spark job for all Orders DWS aggregations."""
     from pyspark.sql import SparkSession
-    from pyspark.sql.functions import col, sum, count, avg, max, min, when, lit, date_format, year, month, datediff, desc, to_date, from_unixtime, isnan, isnull
+    from pyspark.sql.functions import col, sum, count, avg, max, min, when, lit, date_format, year, month, datediff, desc, to_date, from_unixtime, isnan, isnull, input_file_name, regexp_extract
     from pyspark.sql.types import DecimalType, DoubleType
     from config.data_types_config import AMOUNT, AVERAGE, RATE, DAYS, FREQUENCY
     import logging
@@ -73,53 +73,62 @@ def run_dws_orders_analytics_etl(**context):
             context['task_instance'].xcom_push(key='status', value='SKIPPED_NO_SOURCE_TABLE')
             return
         
-        # Load DWD data with robust error handling
+        # Load DWD data directly from Parquet files to avoid schema conflicts
+        logging.info("🔄 Loading DWD data directly from Parquet files to bypass schema issues...")
+        
+        # Configure Spark for better Parquet handling
+        spark.conf.set("spark.sql.parquet.inferTimestampNTZ.enabled", "false")
+        spark.conf.set("spark.sql.parquet.int96RebaseModeInRead", "CORRECTED")
+        spark.conf.set("spark.sql.parquet.mergeSchema", "true")
+        
         try:
-            # First, try to load with schema inference disabled to avoid type conflicts
-            spark.conf.set("spark.sql.parquet.inferTimestampNTZ.enabled", "false")
-            spark.conf.set("spark.sql.parquet.int96RebaseModeInRead", "CORRECTED")
+            # Read directly from HDFS path to bypass Hive metastore schema conflicts
+            hdfs_path = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
             
-            dwd_df_raw = spark.table("dwd_db.dwd_orders").filter(
-                col("dt").between(start_date_30d, batch_date) &
-                (col("is_empty_partition").isNull() | (col("is_empty_partition") == False))
-            )
+            # Get list of partitions in date range
+            partitions_to_read = []
+            for i in range((datetime.strptime(batch_date, '%Y-%m-%d') - datetime.strptime(start_date_30d, '%Y-%m-%d')).days + 1):
+                partition_date = (datetime.strptime(start_date_30d, '%Y-%m-%d') + timedelta(days=i)).strftime('%Y-%m-%d')
+                partition_path = f"{hdfs_path}/dt={partition_date}"
+                partitions_to_read.append(partition_path)
             
-            # Handle data type conversions for OrderDate and other fields
+            logging.info(f"📂 Reading from {len(partitions_to_read)} partitions: {start_date_30d} to {batch_date}")
             
-            # Check the actual schema and convert OrderDate if needed
-            logging.info("📋 Checking DWD schema and data types...")
+            # Read parquet files directly with schema merging
+            dwd_df_raw = spark.read.option("mergeSchema", "true").option("recursiveFileLookup", "true").parquet(*partitions_to_read)
+            
+            # Add dt column if missing (extract from file path)
+            if "dt" not in dwd_df_raw.columns:
+                dwd_df_raw = dwd_df_raw.withColumn("dt", 
+                    regexp_extract(input_file_name(), r"dt=(\d{4}-\d{2}-\d{2})", 1)
+                )
+            
+            # Filter out empty partitions if the column exists
+            if "is_empty_partition" in dwd_df_raw.columns:
+                dwd_df_raw = dwd_df_raw.filter(
+                    (col("is_empty_partition").isNull()) | (col("is_empty_partition") == False)
+                )
+            
+            # Check the actual Parquet schema and handle OrderDate conversion
+            logging.info("📋 Checking actual Parquet schema...")
             dwd_schema = dwd_df_raw.schema
             orderdate_field_type = None
             
             for field in dwd_schema.fields:
                 if field.name == "OrderDate":
                     orderdate_field_type = str(field.dataType)
-                    logging.info(f"OrderDate field type: {orderdate_field_type}")
+                    logging.info(f"OrderDate field type in Parquet: {orderdate_field_type}")
             
-            # Convert OrderDate based on its current type
-            if orderdate_field_type and "long" in orderdate_field_type.lower():
-                logging.info("🔄 Converting OrderDate from LONG/INT64 to DATE")
-                # Handle Unix timestamp (seconds or milliseconds)
-                dwd_df_30d = dwd_df_raw.withColumn(
-                    "OrderDate",
-                    when(col("OrderDate").isNull(), None)
-                    .when(col("OrderDate") > 1000000000000, to_date(from_unixtime(col("OrderDate") / 1000)))  # milliseconds
-                    .when(col("OrderDate") > 1000000000, to_date(from_unixtime(col("OrderDate"))))  # seconds
-                    .when(col("OrderDate") > 19000000, to_date(col("OrderDate").cast("string"), "yyyyMMdd"))  # YYYYMMDD format
-                    .otherwise(to_date(col("OrderDate").cast("string")))
-                )
-            elif orderdate_field_type and "string" in orderdate_field_type.lower():
-                logging.info("🔄 Converting OrderDate from STRING to DATE")
-                dwd_df_30d = dwd_df_raw.withColumn(
-                    "OrderDate",
-                    when(col("OrderDate").isNull(), None)
-                    .when(col("OrderDate").rlike("^\\d{4}-\\d{2}-\\d{2}$"), to_date(col("OrderDate"), "yyyy-MM-dd"))
-                    .when(col("OrderDate").rlike("^\\d{8}$"), to_date(col("OrderDate"), "yyyyMMdd"))
-                    .otherwise(to_date(col("OrderDate")))
-                )
-            else:
-                logging.info("🔄 OrderDate appears to be in correct format, using as-is")
-                dwd_df_30d = dwd_df_raw
+            # Always convert OrderDate from INT64 to proper DATE format
+            logging.info("🔄 Converting OrderDate from INT64 to DATE format")
+            dwd_df_30d = dwd_df_raw.withColumn(
+                "OrderDate",
+                when(col("OrderDate").isNull(), None)
+                .when(col("OrderDate") > 1000000000000, to_date(from_unixtime(col("OrderDate") / 1000)))  # milliseconds
+                .when(col("OrderDate") > 1000000000, to_date(from_unixtime(col("OrderDate"))))  # seconds  
+                .when(col("OrderDate") > 19000000, to_date(col("OrderDate").cast("string"), "yyyyMMdd"))  # YYYYMMDD format
+                .otherwise(to_date(col("OrderDate").cast("string")))
+            )
             
             # Ensure other numeric fields are properly typed with null handling
             dwd_df_30d = dwd_df_30d.withColumn("TotalAmount", 
@@ -134,62 +143,12 @@ def run_dws_orders_analytics_etl(**context):
             )
             
             dwd_df_30d.cache()
+            logging.info("✅ Successfully loaded and converted DWD data from Parquet files")
             
         except Exception as load_error:
-            logging.error(f"❌ Failed to load DWD data: {load_error}")
-            
-            # Try alternative loading approach with explicit schema handling
-            try:
-                logging.info("🔄 Attempting alternative data loading approach...")
-                
-                # Read directly from HDFS path to bypass Hive metastore issues
-                hdfs_path = f"hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
-                
-                # Get list of partitions in date range
-                partitions_to_read = []
-                for i in range((datetime.strptime(batch_date, '%Y-%m-%d') - datetime.strptime(start_date_30d, '%Y-%m-%d')).days + 1):
-                    partition_date = (datetime.strptime(start_date_30d, '%Y-%m-%d') + timedelta(days=i)).strftime('%Y-%m-%d')
-                    partitions_to_read.append(f"{hdfs_path}/dt={partition_date}")
-                
-                logging.info(f"📂 Reading from partitions: {partitions_to_read}")
-                
-                # Read parquet files directly
-                dwd_df_raw = spark.read.option("mergeSchema", "true").parquet(*partitions_to_read)
-                
-                # Add dt column if missing
-                if "dt" not in dwd_df_raw.columns:
-                    # Extract dt from input file path
-                    from pyspark.sql.functions import input_file_name, regexp_extract
-                    dwd_df_raw = dwd_df_raw.withColumn("dt", 
-                        regexp_extract(input_file_name(), r"dt=(\d{4}-\d{2}-\d{2})", 1)
-                    )
-                
-                # Apply the same OrderDate conversion logic
-                dwd_df_30d = dwd_df_raw.withColumn(
-                    "OrderDate",
-                    when(col("OrderDate").isNull(), None)
-                    .when(col("OrderDate") > 1000000000000, to_date(from_unixtime(col("OrderDate") / 1000)))
-                    .when(col("OrderDate") > 1000000000, to_date(from_unixtime(col("OrderDate"))))
-                    .when(col("OrderDate") > 19000000, to_date(col("OrderDate").cast("string"), "yyyyMMdd"))
-                    .otherwise(to_date(col("OrderDate").cast("string")))
-                ).withColumn("TotalAmount", 
-                    when(col("TotalAmount").isNull() | isnan(col("TotalAmount")), 0.0)
-                    .otherwise(col("TotalAmount").cast("decimal(20,2)"))
-                ).withColumn("NetAmount",
-                    when(col("NetAmount").isNull() | isnan(col("NetAmount")), 0.0)
-                    .otherwise(col("NetAmount").cast("decimal(20,2)"))
-                ).withColumn("ProcessingDays",
-                    when(col("ProcessingDays").isNull() | isnan(col("ProcessingDays")), 0)
-                    .otherwise(col("ProcessingDays").cast("int"))
-                )
-                
-                dwd_df_30d.cache()
-                logging.info("✅ Successfully loaded data using alternative approach")
-                
-            except Exception as alt_load_error:
-                logging.error(f"❌ Alternative loading approach also failed: {alt_load_error}")
-                context['task_instance'].xcom_push(key='status', value='FAILED_DATA_LOADING')
-                raise Exception(f"Could not load DWD data: {load_error}. Alternative approach: {alt_load_error}")
+            logging.error(f"❌ Failed to load DWD data from Parquet files: {load_error}")
+            context['task_instance'].xcom_push(key='status', value='FAILED_DATA_LOADING')
+            raise Exception(f"Could not load DWD data from Parquet files: {load_error}")
         
         # 记录数据范围和统计信息
         total_rows = dwd_df_30d.count()
