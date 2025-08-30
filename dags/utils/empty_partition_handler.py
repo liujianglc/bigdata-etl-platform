@@ -1,3 +1,4 @@
+
 """
 Empty Partition Handler Utility
 Handles creation of empty partitions when no data is available for a given date.
@@ -37,7 +38,7 @@ def handle_empty_partition(spark, empty_df, table_name, batch_date, context, loc
     
     Args:
         spark: SparkSession
-        df: Original DataFrame (empty)
+        empty_df: An empty DataFrame with the target schema.
         table_name: Target table name
         batch_date: Batch date string
         context: Airflow context
@@ -59,7 +60,7 @@ def handle_empty_partition(spark, empty_df, table_name, batch_date, context, loc
         return 'SKIPPED_EMPTY_DATA'
     
     elif strategy == 'use_previous_day':
-        return _handle_previous_day_strategy(spark, table_name, batch_date, table_strategy, context)
+        return _handle_previous_day_strategy(spark, empty_df, table_name, batch_date, table_strategy, context, location, metadata_config)
     
     elif strategy == 'create_empty':
         return _create_empty_partition(spark, empty_df, table_name, batch_date, context, location, metadata_config)
@@ -80,28 +81,31 @@ def _create_empty_partition(spark, empty_df, table_name, batch_date, context, lo
         pass  # Table might not be cached
 
     # Add partition column
-    empty_df = empty_df.withColumn('dt', lit(batch_date))
+    df_to_write = empty_df.withColumn('dt', lit(batch_date))
 
-    # Add metadata columns based on configuration
-    if metadata_config.get('include_etl_timestamp', True):
-        empty_df = empty_df.withColumn('etl_created_date', current_timestamp())
+    # Add metadata columns based on configuration, if they exist in the schema
+    if metadata_config.get('include_etl_timestamp', True) and 'etl_created_date' in df_to_write.columns:
+        df_to_write = df_to_write.withColumn('etl_created_date', current_timestamp())
 
-    if metadata_config.get('include_batch_id', True):
-        empty_df = empty_df.withColumn('etl_batch_id', lit(context['ds_nodash']))
+    if metadata_config.get('include_batch_id', True) and 'etl_batch_id' in df_to_write.columns:
+        df_to_write = df_to_write.withColumn('etl_batch_id', lit(context['ds_nodash']))
 
-    if metadata_config.get('add_empty_flag', True):
-        empty_df = empty_df.withColumn('is_empty_partition', lit(True))
+    if metadata_config.get('add_empty_flag', True) and 'is_empty_partition' in df_to_write.columns:
+        df_to_write = df_to_write.withColumn('is_empty_partition', lit(True))
 
     # Create database if not exists
     database_name = table_name.split('.')[0]
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {database_name}")
 
     # Write empty partition
-    empty_df.write.mode("overwrite") \
+    writer = df_to_write.write.mode("overwrite") \
            .partitionBy("dt") \
-           .format("parquet") \
-           .option("path", location) \
-           .saveAsTable(table_name)
+           .format("parquet")
+    
+    if location:
+        writer = writer.option("path", location)
+        
+    writer.saveAsTable(table_name)
 
     # Comprehensive metadata refresh after writing
     try:
@@ -124,7 +128,7 @@ def _create_empty_partition(spark, empty_df, table_name, batch_date, context, lo
     return 'SUCCESS_EMPTY_PARTITION'
 
 
-def _handle_previous_day_strategy(spark, table_name, batch_date, table_strategy, context):
+def _handle_previous_day_strategy(spark, empty_df, table_name, batch_date, table_strategy, context, location, metadata_config):
     """Try to use data from previous days as fallback."""
     fallback_days = table_strategy.get('fallback_days', 3)
     batch_datetime = datetime.strptime(batch_date, '%Y-%m-%d')
@@ -151,18 +155,28 @@ def _handle_previous_day_strategy(spark, table_name, batch_date, table_strategy,
             if fallback_date in available_dates:
                 logging.info(f"Using data from {fallback_date} for {batch_date}")
                 
-                # Copy data from previous day with updated partition
+                # Copy data from previous day, ensuring schema compatibility
                 fallback_df = spark.sql(f"SELECT * FROM {table_name} WHERE dt = '{fallback_date}'")
-                fallback_df = fallback_df.withColumn('dt', lit(batch_date)) \
-                                       .withColumn('etl_created_date', current_timestamp()) \
-                                       .withColumn('etl_batch_id', lit(context['ds_nodash'])) \
-                                       .withColumn('is_fallback_data', lit(True))
                 
+                # Update partition and metadata columns. Do NOT add new columns.
+                df_to_write = fallback_df.withColumn('dt', lit(batch_date))
+                
+                if 'etl_created_date' in df_to_write.columns:
+                    df_to_write = df_to_write.withColumn('etl_created_date', current_timestamp())
+                if 'etl_batch_id' in df_to_write.columns:
+                    df_to_write = df_to_write.withColumn('etl_batch_id', lit(context['ds_nodash']))
+                if 'is_empty_partition' in df_to_write.columns:
+                    df_to_write = df_to_write.withColumn('is_empty_partition', lit(False))
+
                 # Write with new partition date
-                fallback_df.write.mode("overwrite") \
-                          .partitionBy("dt") \
-                          .format("parquet") \
-                          .saveAsTable(table_name)
+                writer = df_to_write.write.mode("overwrite") \
+                                   .partitionBy("dt") \
+                                   .format("parquet")
+                
+                if location:
+                    writer = writer.option("path", location)
+                
+                writer.saveAsTable(table_name)
                 
                 # Refresh metadata after writing
                 try:
@@ -183,12 +197,12 @@ def _handle_previous_day_strategy(spark, table_name, batch_date, table_strategy,
                 return 'SUCCESS_FALLBACK_DATA'
                 
         except Exception as e:
-            logging.warning(f"Failed to check fallback date {fallback_date}: {e}")
+            logging.warning(f"Failed to check or use fallback date {fallback_date}: {e}")
             continue
     
-    # If no fallback data found, create empty partition
-    logging.warning(f"No fallback data found for {table_name}, creating empty partition")
-    return 'SUCCESS_EMPTY_PARTITION'
+    # If no fallback data found after all attempts, create an empty partition
+    logging.warning(f"No fallback data found for {table_name} within {fallback_days} days. Creating empty partition.")
+    return _create_empty_partition(spark, empty_df, table_name, batch_date, context, location, metadata_config)
 
 def check_consecutive_empty_days(spark, table_name, batch_date, max_consecutive=3):
     """Check if there have been too many consecutive empty days."""
