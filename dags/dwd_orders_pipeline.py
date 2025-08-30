@@ -96,7 +96,7 @@ def run_dwd_orders_etl(**context):
         StructField("PaymentMethod", StringType(), True),
         StructField("PaymentStatus", StringType(), True),
         StructField("TotalAmount", DecimalType(10,2), True),
-        StructField("Discount", DecimalType(10,2), True),
+        StructField("Discount", DecimalType(5,2), True),
         StructField("ShippingAddress", StringType(), True),
         StructField("ShippingMethod", StringType(), True),
         StructField("Remarks", StringType(), True),
