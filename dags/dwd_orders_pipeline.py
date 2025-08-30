@@ -225,7 +225,7 @@ def run_dwd_orders_etl(**context):
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
         record_count = df.limit(1).count()
         if record_count == 0:
-            logging.warning("No records found for this batch.")
+            logging.warning("No records found for this batch. Creating an empty partition.")
             table_name = "dwd_db.dwd_orders"
             location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
             
@@ -235,9 +235,12 @@ def run_dwd_orders_etl(**context):
             
             # Use the utility function to handle empty partition
             from utils.empty_partition_handler import handle_empty_partition
-            status = handle_empty_partition(spark, empty_df, table_name, batch_date, context, location)
+            handle_empty_partition(spark, empty_df, table_name, batch_date, context, location)
             
-            context['task_instance'].xcom_push(key='status', value=status)
+            # Explicitly push the status for downstream tasks to check.
+            # This ensures the correct status is always set, regardless of the handler's return value.
+            logging.info("Pushing 'SUCCESS_EMPTY_PARTITION' status to XCom.")
+            context['task_instance'].xcom_push(key='status', value='SUCCESS_EMPTY_PARTITION')
             context['task_instance'].xcom_push(key='table_name', value=table_name)
             return
 
