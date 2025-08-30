@@ -77,9 +77,56 @@ def run_dwd_orders_etl(**context):
     from pyspark.sql import SparkSession
     from pyspark.sql.functions import (
         col, when, datediff, year, month, dayofmonth, dayofweek, quarter, coalesce, lit, 
-        min, max, current_timestamp, create_map, avg, sum as spark_sum, count as spark_count
+        min, max, current_timestamp, create_map, avg, sum as spark_sum, count as spark_count,
+        to_date, from_unixtime
     )
-    from pyspark.sql.types import DecimalType
+    from pyspark.sql.types import (
+        StructType, StructField, StringType, DecimalType, DateType, TimestampType, 
+        BooleanType, IntegerType
+    )
+
+    # Define the single source of truth for the final table schema
+    transformed_schema = StructType([
+        StructField("OrderID", IntegerType(), True),
+        StructField("CustomerID", IntegerType(), True),
+        StructField("OrderDate", DateType(), True),
+        StructField("RequiredDate", DateType(), True),
+        StructField("ShippedDate", DateType(), True),
+        StructField("Status", StringType(), True),
+        StructField("PaymentMethod", StringType(), True),
+        StructField("PaymentStatus", StringType(), True),
+        StructField("TotalAmount", DecimalType(10,2), True),
+        StructField("Discount", DecimalType(10,2), True),
+        StructField("ShippingAddress", StringType(), True),
+        StructField("ShippingMethod", StringType(), True),
+        StructField("Remarks", StringType(), True),
+        StructField("CreatedBy", IntegerType(), True),
+        StructField("CreatedDate", TimestampType(), True),
+        StructField("UpdatedDate", TimestampType(), True),
+        StructField("CustomerName", StringType(), True),
+        StructField("CustomerType", StringType(), True),
+        StructField("CreatedByName", StringType(), True),
+        StructField("CreatedByDepartment", StringType(), True),
+        # Transformed columns
+        StructField("OrderStatus", StringType(), True),
+        StructField("LeadTimeDays", IntegerType(), True),
+        StructField("ProcessingDays", IntegerType(), True),
+        StructField("IsDelayed", BooleanType(), True),
+        StructField("DeliveryStatus", StringType(), True),
+        StructField("OrderYear", IntegerType(), True),
+        StructField("OrderMonth", IntegerType(), True),
+        StructField("OrderDay", IntegerType(), True),
+        StructField("OrderDayOfWeek", IntegerType(), True),
+        StructField("OrderQuarter", IntegerType(), True),
+        StructField("NetAmount", DecimalType(10,2), True),
+        StructField("OrderSizeCategory", StringType(), True),
+        StructField("OrderPriority", StringType(), True),
+        StructField("DataQualityScore", IntegerType(), True),
+        StructField("DataQualityLevel", StringType(), True),
+        StructField("etl_created_date", TimestampType(), True),
+        StructField("etl_batch_id", StringType(), True),
+        StructField("is_empty_partition", BooleanType(), True),
+    ])
 
     spark = None
     try:
@@ -141,41 +188,39 @@ def run_dwd_orders_etl(**context):
         logging.info(f"Executing dynamically generated query:\n{query}")
         df = spark.sql(query)
         
-        # Handle schema compatibility for date columns
-        # Convert any INT64 date columns to proper date types
-        from pyspark.sql.types import DateType, TimestampType
-        
+        # Handle schema compatibility for date and timestamp columns
         try:
             df_types = dict(df.dtypes)
-            logging.info(f"Current DataFrame schema: {df_types}")
-            
-            # Check and fix OrderDate column type if needed
-            order_date_type = df_types.get('OrderDate')
-            if order_date_type and ('int' in order_date_type.lower() or 'long' in order_date_type.lower()):
-                logging.info(f"Converting OrderDate from {order_date_type} to DateType for schema compatibility")
-                df = df.withColumn("OrderDate", col("OrderDate").cast(DateType()))
-            
-            # Check and fix other date columns
-            for date_col in ['RequiredDate', 'ShippedDate']:
+            logging.info(f"Initial DataFrame schema: {df_types}")
+
+            # Robustly convert date columns (handles INT/LONG and Timestamp)
+            for date_col in ['OrderDate', 'RequiredDate', 'ShippedDate']:
                 if date_col in df_types:
                     col_type = df_types.get(date_col)
                     if col_type and ('int' in col_type.lower() or 'long' in col_type.lower()):
-                        logging.info(f"Converting {date_col} from {col_type} to DateType for schema compatibility")
+                        logging.info(f"Converting date column '{date_col}' from INT/LONG to DateType. Assuming YYYYMMDD format.")
+                        df = df.withColumn(date_col, to_date(col(date_col).cast(StringType()), 'yyyyMMdd'))
+                    elif col_type == 'timestamp':
+                        logging.info(f"Converting date column '{date_col}' from TimestampType to DateType by casting.")
                         df = df.withColumn(date_col, col(date_col).cast(DateType()))
-            
-            # Check and fix timestamp columns
+
+            # Robustly convert timestamp columns (handles INT/LONG)
             for ts_col in ['CreatedDate', 'UpdatedDate']:
                 if ts_col in df_types:
                     col_type = df_types.get(ts_col)
                     if col_type and ('int' in col_type.lower() or 'long' in col_type.lower()):
-                        logging.info(f"Converting {ts_col} from {col_type} to TimestampType for schema compatibility")
-                        df = df.withColumn(ts_col, col(ts_col).cast(TimestampType()))
-                        
-            logging.info("Schema compatibility check completed")
+                        logging.info(f"Converting timestamp column '{ts_col}' from INT/LONG to TimestampType. Assuming Unix timestamp (seconds).")
+                        df = df.withColumn(ts_col, from_unixtime(col(ts_col)).cast("timestamp"))
+                    # If col_type is already 'timestamp', no action is needed.
             
+            logging.info("Schema compatibility conversion completed successfully.")
+            final_types = dict(df.dtypes)
+            logging.info(f"Schema after conversion: {final_types}")
+
         except Exception as schema_e:
-            logging.warning(f"Schema compatibility conversion failed: {schema_e}")
-            # Continue with original DataFrame if conversion fails
+            logging.error(f"Fatal error during schema compatibility conversion: {schema_e}", exc_info=True)
+            # If conversion fails, it's better to fail the task than to write corrupted data
+            raise ValueError("Schema conversion for dates/timestamps failed, cannot proceed.") from schema_e
         
         # Use limit(1).count() instead of rdd.isEmpty() for better performance
         record_count = df.limit(1).count()
@@ -184,52 +229,8 @@ def run_dwd_orders_etl(**context):
             table_name = "dwd_db.dwd_orders"
             location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
             
-            # Create an empty DataFrame with the full transformed schema
-            # This ensures empty partitions have the same schema as data partitions
-            from pyspark.sql.types import StructType, StructField, StringType, DecimalType, DateType, TimestampType, BooleanType, IntegerType
-            
-            transformed_schema = StructType([
-                StructField("OrderID", IntegerType(), True),
-                StructField("CustomerID", IntegerType(), True),
-                StructField("OrderDate", DateType(), True),
-                StructField("RequiredDate", DateType(), True),
-                StructField("ShippedDate", DateType(), True),
-                StructField("Status", StringType(), True),
-                StructField("PaymentMethod", StringType(), True),
-                StructField("PaymentStatus", StringType(), True),
-                StructField("TotalAmount", DecimalType(10,2), True),
-                StructField("Discount", DecimalType(10,2), True),
-                StructField("ShippingAddress", StringType(), True),
-                StructField("ShippingMethod", StringType(), True),
-                StructField("Remarks", StringType(), True),
-                StructField("CreatedBy", IntegerType(), True),
-                StructField("CreatedDate", TimestampType(), True),
-                StructField("UpdatedDate", TimestampType(), True),
-                StructField("CustomerName", StringType(), True),
-                StructField("CustomerType", StringType(), True),
-                StructField("CreatedByName", StringType(), True),
-                StructField("CreatedByDepartment", StringType(), True),
-                # Transformed columns
-                StructField("OrderStatus", StringType(), True),
-                StructField("LeadTimeDays", IntegerType(), True),
-                StructField("ProcessingDays", IntegerType(), True),
-                StructField("IsDelayed", BooleanType(), True),
-                StructField("DeliveryStatus", StringType(), True),
-                StructField("OrderYear", IntegerType(), True),
-                StructField("OrderMonth", IntegerType(), True),
-                StructField("OrderDay", IntegerType(), True),
-                StructField("OrderDayOfWeek", IntegerType(), True),
-                StructField("OrderQuarter", IntegerType(), True),
-                StructField("NetAmount", DecimalType(10,2), True),
-                StructField("OrderSizeCategory", StringType(), True),
-                StructField("OrderPriority", StringType(), True),
-                StructField("DataQualityScore", IntegerType(), True),
-                StructField("DataQualityLevel", StringType(), True),
-                StructField("etl_created_date", TimestampType(), True),
-                StructField("etl_batch_id", StringType(), True),
-                StructField("is_empty_partition", BooleanType(), True),
-            ])
-            
+            # Create an empty DataFrame using the unified schema
+            logging.info("Creating an empty DataFrame with the unified schema for empty partition.")
             empty_df = spark.createDataFrame([], transformed_schema)
             
             # Use the utility function to handle empty partition
@@ -265,7 +266,7 @@ def run_dwd_orders_etl(**context):
                .withColumn("IsDelayed", col("ShippedDate") > col("RequiredDate")) \
                .withColumn("DeliveryStatus", 
                          when(col("OrderStatus").isin(["Cancelled"]), "Cancelled")
-                         .when(col("OrderStatus").isin(["Delivered"]), "Completed")
+                         .when(col("OrderStatus").isin(["Delivered"]), "Delivered")
                          .when((col("ShippedDate").isNotNull()) & (col("ShippedDate") <= col("RequiredDate")), "OnTime")
                          .when((col("ShippedDate").isNotNull()) & (col("ShippedDate") > col("RequiredDate")), "Late")
                          .when((col("RequiredDate") < lit(batch_date)) & col("ShippedDate").isNull(), "Overdue")
@@ -319,6 +320,11 @@ def run_dwd_orders_etl(**context):
             'delayed_orders': delayed_orders, 'avg_processing_days': avg_processing_days
         }
         context['task_instance'].xcom_push(key='transform_stats', value=transform_stats)
+
+        logging.info("Enforcing final schema to ensure consistency before loading...")
+        final_col_order = [field.name for field in transformed_schema.fields]
+        df = df.select(*final_col_order)
+        logging.info("✅ Final schema enforced.")
 
         logging.info("Loading data to DWD layer...")
         table_name = "dwd_db.dwd_orders"
