@@ -253,26 +253,16 @@ def create_spark():
     builder = builder.master("local[1]")  # 容器环境使用单核避免资源竞争
     
     # 容器环境优化配置
-    
     try:
-        # 检查是否有本地MySQL JAR文件
-        local_jar_path = "/opt/spark/jars/custom/mysql-connector-java-8.0.33.jar"
-        if os.path.exists(local_jar_path):
-            logging.info(f"找到本地MySQL JAR文件: {local_jar_path}")
-            builder = builder.config("spark.jars", local_jar_path)
-        else:
-            logging.info("使用packages方式加载MySQL驱动")
-            builder = builder.config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33")
-        
         spark = builder \
             .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
             .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
             .config("spark.sql.catalogImplementation", "hive") \
             .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
             .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
-            .config("spark.driver.memory", "512m") \
-            .config("spark.driver.maxResultSize", "256m") \
-            .config("spark.executor.memory", "512m") \
+            .config("spark.driver.memory", "2g") \
+            .config("spark.driver.maxResultSize", "2g") \
+            .config("spark.executor.memory", "2g") \
             .config("spark.executor.cores", "1") \
             .config("spark.driver.cores", "1") \
             .config("spark.network.timeout", "300s") \
@@ -320,7 +310,7 @@ def create_spark():
                 .master("local[1]") \
                 .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
                 .config("spark.driver.memory", "512m") \
-                .config("spark.driver.maxResultSize", "256m") \
+                .config("spark.driver.maxResultSize", "512m") \
                 .config("spark.executor.memory", "512m") \
                 .config("spark.local.dir", "/tmp/spark") \
                 .config("spark.worker.dir", "/tmp/spark-worker") \
@@ -331,8 +321,6 @@ def create_spark():
                 .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
                 .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
                 .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
-                .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-                .config("spark.sql.adaptive.enabled", "false") \
                 .enableHiveSupport() \
                 .getOrCreate()
             
@@ -346,10 +334,6 @@ def create_spark():
             # 最后尝试：不使用Hive支持的纯Spark会话
             logging.info("最后尝试：创建不带Hive支持的纯Spark会话...")
             try:
-                # 等待一段时间让资源释放
-                import time
-                time.sleep(10)
-                
                 spark = SparkSession.builder \
                     .appName("MySQL to Hive Sync - Pure Spark") \
                     .master("local[1]") \
@@ -358,10 +342,6 @@ def create_spark():
                     .config("spark.executor.memory", "512m") \
                     .config("spark.local.dir", "/tmp/spark") \
                     .config("spark.ui.enabled", "false") \
-                    .config("spark.sql.adaptive.enabled", "false") \
-                    .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-                    .config("spark.driver.bindAddress", "0.0.0.0") \
-                    .config("spark.driver.host", "localhost") \
                     .getOrCreate()
                 
                 logging.warning("⚠️ 创建了不带Hive支持的Spark会话，功能可能受限")
@@ -370,14 +350,6 @@ def create_spark():
             except Exception as e3:
                 logging.error(f"所有配置都失败: {e3}")
                 logging.error(f"纯Spark配置详细错误: {traceback.format_exc()}")
-                
-                # 提供更详细的故障排除信息
-                logging.error("故障排除信息:")
-                logging.error(f"  - Java版本: {os.environ.get('JAVA_HOME', '未设置')}")
-                logging.error(f"  - Spark Home: {os.environ.get('SPARK_HOME', '未设置')}")
-                logging.error(f"  - 可用内存: 尝试检查 'free -m' 命令")
-                logging.error(f"  - 容器资源限制: 检查 Docker 内存限制")
-                
                 raise Exception("无法创建任何Spark会话配置")
 
 def cleanup_old_partitions(spark, table_name, partition_column, retention_days=30):
