@@ -222,8 +222,11 @@ def create_spark():
     
     # 容器环境的Spark配置
     if is_container:
-        # 设置容器环境特定的JVM参数
-        os.environ['PYSPARK_SUBMIT_ARGS'] = '--driver-memory 512m --executor-memory 512m pyspark-shell'
+        # 设置容器环境特定的JVM参数 - 使用更大的内存
+        driver_mem = os.getenv("SPARK_DRIVER_MEMORY", "2g")
+        executor_mem = os.getenv("SPARK_EXECUTOR_MEMORY", "2g")
+        os.environ['PYSPARK_SUBMIT_ARGS'] = f'--driver-memory {driver_mem} --executor-memory {executor_mem} pyspark-shell'
+        logging.info(f"设置PYSPARK_SUBMIT_ARGS: {os.environ['PYSPARK_SUBMIT_ARGS']}")
         
         # 设置Spark临时目录（使用airflow用户可写的目录）
         spark_temp_dirs = ['/tmp/spark', '/tmp/spark-worker', '/opt/airflow/spark-temp']
@@ -252,7 +255,30 @@ def create_spark():
     logging.info("容器环境使用本地Spark模式")
     builder = builder.master("local[1]")  # 容器环境使用单核避免资源竞争
     
-    # 容器环境优化配置
+    # 容器环境优化配置 - 使用环境变量或默认值
+    driver_memory = os.getenv("SPARK_DRIVER_MEMORY", "2g")
+    executor_memory = os.getenv("SPARK_EXECUTOR_MEMORY", "2g")
+    logging.info(f"Spark内存配置: Driver={driver_memory}, Executor={executor_memory}")
+    
+    # 清理可能存在的Spark进程和端口
+    try:
+        import subprocess
+        # 清理可能占用端口的进程
+        subprocess.run(["fuser", "-k", "4040/tcp"], capture_output=True, timeout=3)
+        subprocess.run(["fuser", "-k", "7077/tcp"], capture_output=True, timeout=3)
+        logging.info("清理了可能占用的Spark端口")
+    except:
+        pass
+    
+    # 清理Spark上下文
+    try:
+        from pyspark import SparkContext
+        if SparkContext._active_spark_context:
+            SparkContext._active_spark_context.stop()
+            logging.info("停止了活跃的Spark上下文")
+    except:
+        pass
+    
     try:
         spark = builder \
             .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
@@ -260,9 +286,9 @@ def create_spark():
             .config("spark.sql.catalogImplementation", "hive") \
             .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
             .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
-            .config("spark.driver.memory", "2g") \
-            .config("spark.driver.maxResultSize", "2g") \
-            .config("spark.executor.memory", "2g") \
+            .config("spark.driver.memory", driver_memory) \
+            .config("spark.driver.maxResultSize", "1g") \
+            .config("spark.executor.memory", executor_memory) \
             .config("spark.executor.cores", "1") \
             .config("spark.driver.cores", "1") \
             .config("spark.network.timeout", "300s") \
@@ -308,9 +334,9 @@ def create_spark():
             spark = SparkSession.builder \
                 .appName("MySQL to Hive Sync - Container Minimal") \
                 .master("local[1]") \
-                .config("spark.driver.memory", "256m") \
-                .config("spark.driver.maxResultSize", "128m") \
-                .config("spark.executor.memory", "256m") \
+                .config("spark.driver.memory", "1g") \
+                .config("spark.driver.maxResultSize", "512m") \
+                .config("spark.executor.memory", "1g") \
                 .config("spark.local.dir", "/tmp/spark") \
                 .config("spark.worker.dir", "/tmp/spark-worker") \
                 .config("spark.driver.bindAddress", "0.0.0.0") \
@@ -333,13 +359,21 @@ def create_spark():
             # 最后尝试：不使用Hive支持的纯Spark会话
             logging.info("最后尝试：创建不带Hive支持的纯Spark会话...")
             try:
+                # 等待一段时间让资源释放
+                import time
+                time.sleep(10)
+                
                 spark = SparkSession.builder \
                     .appName("MySQL to Hive Sync - Pure Spark") \
                     .master("local[1]") \
-                    .config("spark.driver.memory", "256m") \
-                    .config("spark.executor.memory", "256m") \
+                    .config("spark.driver.memory", "1g") \
+                    .config("spark.executor.memory", "1g") \
                     .config("spark.local.dir", "/tmp/spark") \
                     .config("spark.ui.enabled", "false") \
+                    .config("spark.sql.adaptive.enabled", "false") \
+                    .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+                    .config("spark.driver.bindAddress", "0.0.0.0") \
+                    .config("spark.driver.host", "localhost") \
                     .getOrCreate()
                 
                 logging.warning("⚠️ 创建了不带Hive支持的Spark会话，功能可能受限")
@@ -348,6 +382,14 @@ def create_spark():
             except Exception as e3:
                 logging.error(f"所有配置都失败: {e3}")
                 logging.error(f"纯Spark配置详细错误: {traceback.format_exc()}")
+                
+                # 提供更详细的故障排除信息
+                logging.error("故障排除信息:")
+                logging.error(f"  - Java版本: {os.environ.get('JAVA_HOME', '未设置')}")
+                logging.error(f"  - Spark Home: {os.environ.get('SPARK_HOME', '未设置')}")
+                logging.error(f"  - 可用内存: 尝试检查 'free -m' 命令")
+                logging.error(f"  - 容器资源限制: 检查 Docker 内存限制")
+                
                 raise Exception("无法创建任何Spark会话配置")
 
 def cleanup_old_partitions(spark, table_name, partition_column, retention_days=30):
