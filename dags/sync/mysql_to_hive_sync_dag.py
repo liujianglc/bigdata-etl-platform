@@ -357,6 +357,13 @@ def cleanup_old_partitions(spark, table_name, partition_column, retention_days=3
     try:
         from datetime import datetime, timedelta
         
+        # 首先检查表是否存在
+        try:
+            spark.sql(f"DESCRIBE {table_name}")
+        except Exception:
+            logging.warning(f"表 {table_name} 不存在，跳过分区清理")
+            return 0
+        
         # 计算保留的最早日期
         cutoff_date = (datetime.now() - timedelta(days=retention_days)).strftime('%Y-%m-%d')
         
@@ -535,17 +542,41 @@ def sync_table(table_conf, **context):
             table_exists = False
             logging.info(f"Hive表 {hive_table} 不存在，将创建新表")
         
-        # 构建增量查询条件
+        # 构建增量查询条件 - 改进版本，避免重复和遗漏数据
         where_clause = ""
         if sync_mode == 'incremental' and table_exists:
             try:
-                result = spark.sql(f"SELECT MAX({inc_col}) FROM {hive_table}").collect()
-                if result and result[0][0] is not None:
-                    last_ts = result[0][0]
-                    where_clause = f" WHERE {inc_col} > '{last_ts}'"
-                    logging.info(f"增量同步：从 {last_ts} 之后开始")
+                # 获取当前分区的最大时间戳，避免跨分区的问题
+                if part_col:
+                    # 对于分区表，只查看当前分区的最大值
+                    partition_filter = f"WHERE {part_col} = '{exec_date}'"
+                    result = spark.sql(f"SELECT MAX({inc_col}) FROM {hive_table} {partition_filter}").collect()
+                    
+                    if result and result[0][0] is not None:
+                        last_ts = result[0][0]
+                        # 使用 >= 避免遗漏相同时间戳的数据，后续会在写入时去重
+                        where_clause = f" WHERE {inc_col} >= '{last_ts}'"
+                        logging.info(f"增量同步（分区表）：从 {last_ts} 开始（包含边界值，写入时会去重）")
+                    else:
+                        # 当前分区为空，查询全部增量数据
+                        # 获取整个表的最大时间戳作为起点
+                        global_result = spark.sql(f"SELECT MAX({inc_col}) FROM {hive_table}").collect()
+                        if global_result and global_result[0][0] is not None:
+                            last_ts = global_result[0][0]
+                            where_clause = f" WHERE {inc_col} > '{last_ts}'"
+                            logging.info(f"增量同步（新分区）：从 {last_ts} 之后开始")
+                        else:
+                            logging.info("增量同步：表完全为空，执行全量同步")
                 else:
-                    logging.info("增量同步：表为空，执行全量同步")
+                    # 非分区表的增量同步
+                    result = spark.sql(f"SELECT MAX({inc_col}) FROM {hive_table}").collect()
+                    if result and result[0][0] is not None:
+                        last_ts = result[0][0]
+                        where_clause = f" WHERE {inc_col} > '{last_ts}'"
+                        logging.info(f"增量同步（非分区表）：从 {last_ts} 之后开始")
+                    else:
+                        logging.info("增量同步：表为空，执行全量同步")
+                        
             except Exception as e:
                 logging.warning(f"无法获取增量时间戳，执行全量同步: {e}")
                 where_clause = ""
@@ -579,6 +610,21 @@ def sync_table(table_conf, **context):
         if part_col:
             df = df.withColumn(part_col, lit(exec_date))
             logging.info(f"添加分区列 {part_col} = {exec_date}")
+        
+        # 对于增量同步，添加去重逻辑以防止边界重复数据
+        if sync_mode == 'incremental' and table_conf.get('primary_key'):
+            primary_key = table_conf['primary_key']
+            logging.info(f"对增量数据按主键 {primary_key} 进行去重...")
+            initial_count = df.count()
+            df = df.dropDuplicates([primary_key])
+            final_count = df.count()
+            
+            if initial_count != final_count:
+                logging.warning(f"⚠️ 增量数据去重：{initial_count} → {final_count}，移除了 {initial_count - final_count} 条重复记录")
+            else:
+                logging.info("✅ 增量数据无重复")
+                
+            record_count = final_count
 
         # HDFS 表位置
         table_location = f"hdfs://namenode:9000/user/hive/warehouse/{hive_db}.db/{hive_table.split('.')[-1]}"
@@ -600,18 +646,49 @@ def sync_table(table_conf, **context):
             # 增量同步逻辑
             logging.info("执行增量同步...")
             if part_col:
-                # 对于分区表，先删除当天分区再写入，避免重复数据
+                # 对于分区表，安全地处理分区删除和写入
                 partition_spec = f"{part_col}='{exec_date}'"
-                try:
-                    spark.sql(f"ALTER TABLE {hive_table} DROP IF EXISTS PARTITION ({partition_spec})")
-                    logging.info(f"删除已存在的分区: {partition_spec}")
-                except Exception as e:
-                    logging.warning(f"删除分区时出现警告: {e}")
+                partition_deleted = False
                 
-                # 增量写入新分区 - 使用更安全的写入策略
-                df.repartition(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
+                try:
+                    # 先检查表是否存在，然后检查分区是否存在
+                    if not table_exists:
+                        raise Exception(f"增量同步：表 {hive_table} 不存在，无法执行增量同步")
+                    
+                    existing_partitions = spark.sql(f"SHOW PARTITIONS {hive_table}").collect()
+                    partition_exists = any(partition_spec in str(p) for p in existing_partitions)
+                    
+                    if partition_exists:
+                        logging.info(f"分区 {partition_spec} 已存在，准备删除...")
+                        spark.sql(f"ALTER TABLE {hive_table} DROP IF EXISTS PARTITION ({partition_spec})")
+                        logging.info(f"✅ 成功删除分区: {partition_spec}")
+                        partition_deleted = True
+                        
+                        # 验证分区确实被删除
+                        updated_partitions = spark.sql(f"SHOW PARTITIONS {hive_table}").collect()
+                        still_exists = any(partition_spec in str(p) for p in updated_partitions)
+                        if still_exists:
+                            raise Exception(f"分区删除验证失败，分区 {partition_spec} 仍然存在")
+                    else:
+                        logging.info(f"分区 {partition_spec} 不存在，直接写入新数据")
+                        partition_deleted = True
+                        
+                except Exception as e:
+                    logging.error(f"❌ 分区删除失败: {e}")
+                    logging.error("为避免数据重复，停止写入操作")
+                    raise Exception(f"分区处理失败，无法安全写入数据: {e}")
+                
+                if partition_deleted:
+                    # 安全写入新分区
+                    logging.info(f"开始写入数据到分区 {partition_spec}...")
+                    df.repartition(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
+                    logging.info(f"✅ 数据写入完成")
+                else:
+                    raise Exception("分区未能安全删除，停止数据写入")
             else:
-                # 对于非分区表，直接追加
+                # 对于非分区表，直接追加（但先检查是否会产生重复）
+                if table_conf.get('primary_key'):
+                    logging.warning("⚠️ 非分区表的增量同步可能产生重复数据，建议配置分区列")
                 df.repartition(2).write.mode("append").options(**write_options).saveAsTable(hive_table)
                 
         elif sync_mode == 'full':
@@ -629,16 +706,46 @@ def sync_table(table_conf, **context):
                 # 策略2: 保留历史数据（按日期分区）
                 logging.info("全量同步 - 保留历史数据（分区模式）...")
                 if part_col:
-                    # 删除当天分区，然后写入新的全量数据到当天分区
+                    # 安全地删除当天分区，然后写入新的全量数据
                     partition_spec = f"{part_col}='{exec_date}'"
-                    try:
-                        spark.sql(f"ALTER TABLE {hive_table} DROP IF EXISTS PARTITION ({partition_spec})")
-                        logging.info(f"删除当天分区: {partition_spec}")
-                    except Exception as e:
-                        logging.warning(f"删除分区时出现警告: {e}")
+                    partition_deleted = False
                     
-                    # 写入到当天分区
-                    df.repartition(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
+                    try:
+                        # 首先检查表是否存在，如果不存在则跳过分区检查
+                        if table_exists:
+                            # 检查并安全删除分区
+                            existing_partitions = spark.sql(f"SHOW PARTITIONS {hive_table}").collect()
+                            partition_exists = any(partition_spec in str(p) for p in existing_partitions)
+                            
+                            if partition_exists:
+                                logging.info(f"全量同步：删除当天分区 {partition_spec}...")
+                                spark.sql(f"ALTER TABLE {hive_table} DROP IF EXISTS PARTITION ({partition_spec})")
+                                
+                                # 验证删除成功
+                                updated_partitions = spark.sql(f"SHOW PARTITIONS {hive_table}").collect()
+                                still_exists = any(partition_spec in str(p) for p in updated_partitions)
+                                if still_exists:
+                                    raise Exception(f"全量同步：分区删除验证失败")
+                                
+                                logging.info(f"✅ 全量同步：成功删除分区 {partition_spec}")
+                            else:
+                                logging.info(f"全量同步：分区 {partition_spec} 不存在，直接写入")
+                        else:
+                            logging.info(f"全量同步：表 {hive_table} 不存在，将创建新表和分区")
+                        
+                        partition_deleted = True
+                        
+                    except Exception as e:
+                        logging.error(f"❌ 全量同步：分区删除失败: {e}")
+                        raise Exception(f"全量同步分区处理失败: {e}")
+                    
+                    if partition_deleted:
+                        # 写入到当天分区
+                        logging.info(f"全量同步：开始写入数据到分区 {partition_spec}...")
+                        df.repartition(2).write.mode("append").partitionBy(part_col).options(**write_options).saveAsTable(hive_table)
+                        logging.info("✅ 全量同步：数据写入完成")
+                    else:
+                        raise Exception("全量同步：分区未能安全处理，停止写入")
                 else:
                     # 如果没有分区列但要保留历史，建议添加分区列
                     logging.warning(f"表 {hive_table} 配置为保留历史但没有分区列，建议添加分区列")

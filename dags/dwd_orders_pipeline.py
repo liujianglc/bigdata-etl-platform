@@ -173,15 +173,41 @@ def run_dwd_orders_etl(**context):
         
         join_sql = "\n".join(join_clauses)
 
+        # 使用窗口函数确保维度表数据唯一性，避免JOIN产生重复记录
         query = f"""
+        WITH unique_customers AS (
+            SELECT 
+                CustomerID,
+                CustomerName,
+                CustomerType,
+                ROW_NUMBER() OVER (
+                    PARTITION BY CustomerID 
+                    ORDER BY UpdatedDate DESC, CreatedDate DESC
+                ) as rn
+            FROM ods.Customers c
+            WHERE {f"c.dt = '{customers_partition}'" if customers_partition else "1=1"}
+        ),
+        unique_employees AS (
+            SELECT 
+                EmployeeID,
+                EmployeeName,
+                Department,
+                ROW_NUMBER() OVER (
+                    PARTITION BY EmployeeID 
+                    ORDER BY UpdatedDate DESC, CreatedDate DESC
+                ) as rn
+            FROM ods.Employees e
+            WHERE {f"e.dt = '{employees_partition}'" if employees_partition else "1=1"}
+        )
         SELECT 
             o.*,
-            c.CustomerName,
-            c.CustomerType,
-            e.EmployeeName as CreatedByName,
-            e.Department as CreatedByDepartment
+            uc.CustomerName,
+            uc.CustomerType,
+            ue.EmployeeName as CreatedByName,
+            ue.Department as CreatedByDepartment
         FROM ods.Orders o
-        {join_sql}
+        LEFT JOIN unique_customers uc ON o.CustomerID = uc.CustomerID AND uc.rn = 1
+        LEFT JOIN unique_employees ue ON o.CreatedBy = ue.EmployeeID AND ue.rn = 1
         WHERE o.dt = '{batch_date}'
         """
         
@@ -329,6 +355,21 @@ def run_dwd_orders_etl(**context):
         df = df.select(*final_col_order)
         logging.info("✅ Final schema enforced.")
 
+        # 添加数据去重检查，确保OrderID唯一性
+        logging.info("Performing data deduplication check...")
+        initial_count = df.count()
+        df = df.dropDuplicates(['OrderID'])
+        final_count = df.count()
+        
+        if initial_count != final_count:
+            duplicate_count = initial_count - final_count
+            logging.warning(f"⚠️ Found and removed {duplicate_count} duplicate records based on OrderID")
+            logging.warning(f"Record count: {initial_count} → {final_count}")
+        else:
+            logging.info("✅ No duplicate records found.")
+            
+        record_count = final_count  # 更新记录数
+
         logging.info("Loading data to DWD layer...")
         table_name = "dwd_db.dwd_orders"
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
@@ -394,6 +435,15 @@ def run_dwd_orders_etl(**context):
 
         df.unpersist()
         logging.info("✅ Data loaded successfully.")
+
+        # 添加重复数据检查统计信息
+        dedup_stats = {
+            'initial_records': initial_count,
+            'final_records': final_count,
+            'duplicates_removed': initial_count - final_count,
+            'deduplication_rate': (initial_count - final_count) / initial_count if initial_count > 0 else 0
+        }
+        context['task_instance'].xcom_push(key='dedup_stats', value=dedup_stats)
 
         summary = {'total_records': record_count, 'partitions': [{'dt': batch_date, 'path': location}]}
         context['task_instance'].xcom_push(key='hdfs_load_summary', value=summary)
@@ -525,9 +575,21 @@ def validate_orders_dwd(**context):
         return
 
     stats = context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='transform_stats')
+    dedup_stats = context['task_instance'].xcom_pull(task_ids='run_dwd_orders_etl_task', key='dedup_stats')
     
     issues = []
-    if stats['total_records'] > 0:
+    warnings = []
+    
+    # 检查重复数据统计
+    if dedup_stats:
+        duplicates_removed = dedup_stats.get('duplicates_removed', 0)
+        dedup_rate = dedup_stats.get('deduplication_rate', 0)
+        
+        if duplicates_removed > 0:
+            warnings.append(f"Removed {duplicates_removed} duplicate records (dedup rate: {dedup_rate:.2%})")
+            logging.info(f"📊 Deduplication stats: {dedup_stats}")
+    
+    if stats and stats['total_records'] > 0:
         poor_quality_ratio = stats['quality_distribution'].get('Poor', 0) / stats['total_records']
         if poor_quality_ratio > 0.1:
             issues.append(f"High ratio of poor quality data: {poor_quality_ratio:.2%}")
@@ -537,9 +599,13 @@ def validate_orders_dwd(**context):
             issues.append(f"High ratio of delayed orders: {delayed_ratio:.2%}")
 
     if issues:
-        logging.warning(f"Validation issues found: {issues}")
-    else:
+        logging.warning(f"❌ Validation issues found: {issues}")
+    if warnings:
+        logging.warning(f"⚠️ Validation warnings: {warnings}")
+    if not issues and not warnings:
         logging.info("✅ Data validation passed.")
+    elif not issues:
+        logging.info("✅ Data validation passed with warnings.")
 
 with DAG(
     'dwd_orders_pipeline',

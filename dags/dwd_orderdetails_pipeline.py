@@ -161,29 +161,124 @@ def run_dwd_orderdetails_etl(**context):
         elif not orderdetails_partition:
             logging.info("ods.OrderDetails: Using non-partitioned table or no partition filter")
 
-        # 构建最终查询 - 使用动态分区日期
+        # 使用窗口函数确保维度表数据唯一性，避免JOIN产生重复记录
         orderdetails_filter = f"od.dt='{orderdetails_partition}'" if orderdetails_partition else "1=1"
-        query = f"""SELECT od.*, o.CustomerID, c.CustomerName, c.CustomerType, p.ProductName, p.Category as ProductCategory, p.Specification as ProductSpecification, w.WarehouseName, w.Manager as WarehouseManager, f.FactoryName, f.Location as FactoryLocation, o.OrderDate, o.Status as OrderStatus, o.PaymentMethod, o.PaymentStatus FROM ods.OrderDetails od {join_sql} WHERE {orderdetails_filter}"""
+        
+        # 构建去重的维度表CTE
+        orders_partition = table_partition_info.get('ods.Orders')
+        customers_partition = table_partition_info.get('ods.Customers')
+        products_partition = table_partition_info.get('ods.Products')
+        warehouses_partition = table_partition_info.get('ods.Warehouses')
+        factories_partition = table_partition_info.get('ods.Factories')
+        
+        query = f"""
+        WITH unique_orders AS (
+            SELECT 
+                OrderID, CustomerID, OrderDate, Status, PaymentMethod, PaymentStatus,
+                ROW_NUMBER() OVER (
+                    PARTITION BY OrderID 
+                    ORDER BY UpdatedDate DESC, CreatedDate DESC
+                ) as rn
+            FROM ods.Orders o
+            WHERE {f"o.dt = '{orders_partition}'" if orders_partition else "1=1"}
+        ),
+        unique_customers AS (
+            SELECT 
+                CustomerID, CustomerName, CustomerType,
+                ROW_NUMBER() OVER (
+                    PARTITION BY CustomerID 
+                    ORDER BY UpdatedDate DESC, CreatedDate DESC
+                ) as rn
+            FROM ods.Customers c
+            WHERE {f"c.dt = '{customers_partition}'" if customers_partition else "1=1"}
+        ),
+        unique_products AS (
+            SELECT 
+                ProductID, ProductName, Category, Specification,
+                ROW_NUMBER() OVER (
+                    PARTITION BY ProductID 
+                    ORDER BY UpdatedDate DESC, CreatedDate DESC
+                ) as rn
+            FROM ods.Products p
+            WHERE {f"p.dt = '{products_partition}'" if products_partition else "1=1"}
+        ),
+        unique_warehouses AS (
+            SELECT 
+                WarehouseID, WarehouseName, Manager, FactoryID,
+                ROW_NUMBER() OVER (
+                    PARTITION BY WarehouseID 
+                    ORDER BY UpdatedDate DESC, CreatedDate DESC
+                ) as rn
+            FROM ods.Warehouses w
+            WHERE {f"w.dt = '{warehouses_partition}'" if warehouses_partition else "1=1"}
+        ),
+        unique_factories AS (
+            SELECT 
+                FactoryID, FactoryName, Location,
+                ROW_NUMBER() OVER (
+                    PARTITION BY FactoryID 
+                    ORDER BY UpdatedDate DESC, CreatedDate DESC
+                ) as rn
+            FROM ods.Factories f
+            WHERE {f"f.dt = '{factories_partition}'" if factories_partition else "1=1"}
+        )
+        SELECT 
+            od.*,
+            uo.CustomerID,
+            uc.CustomerName,
+            uc.CustomerType,
+            up.ProductName,
+            up.Category as ProductCategory,
+            up.Specification as ProductSpecification,
+            uw.WarehouseName,
+            uw.Manager as WarehouseManager,
+            uf.FactoryName,
+            uf.Location as FactoryLocation,
+            uo.OrderDate,
+            uo.Status as OrderStatus,
+            uo.PaymentMethod,
+            uo.PaymentStatus
+        FROM ods.OrderDetails od
+        LEFT JOIN unique_orders uo ON od.OrderID = uo.OrderID AND uo.rn = 1
+        LEFT JOIN unique_customers uc ON uo.CustomerID = uc.CustomerID AND uc.rn = 1
+        LEFT JOIN unique_products up ON od.ProductID = up.ProductID AND up.rn = 1
+        LEFT JOIN unique_warehouses uw ON od.WarehouseID = uw.WarehouseID AND uw.rn = 1
+        LEFT JOIN unique_factories uf ON uw.FactoryID = uf.FactoryID AND uf.rn = 1
+        WHERE {orderdetails_filter}
+        """
         
         logging.info(f"Executing dynamically generated query:\n{query}")
         
-        # 分步调试：先检查基础查询
+        # 分步调试：先检查基础查询和去重效果
         try:
             base_query = f"SELECT COUNT(*) as cnt FROM ods.OrderDetails od WHERE {orderdetails_filter}"
             base_count = spark.sql(base_query).collect()[0]['cnt']
             logging.info(f"Base OrderDetails count with filter '{orderdetails_filter}': {base_count}")
             
             if base_count > 0:
-                # 逐步添加 JOIN 来找出问题
-                step1_query = f"""
-                SELECT COUNT(*) as cnt 
-                FROM ods.OrderDetails od 
-                LEFT JOIN ods.Orders o ON od.OrderID = o.OrderID 
-                    {f"AND o.dt = '{table_partition_info.get('ods.Orders')}'" if table_partition_info.get('ods.Orders') else ""}
-                WHERE {orderdetails_filter}
-                """
-                step1_count = spark.sql(step1_query).collect()[0]['cnt']
-                logging.info(f"After joining with Orders: {step1_count}")
+                # 检查维度表去重效果
+                for table, partition in [
+                    ('ods.Orders', orders_partition),
+                    ('ods.Customers', customers_partition), 
+                    ('ods.Products', products_partition),
+                    ('ods.Warehouses', warehouses_partition),
+                    ('ods.Factories', factories_partition)
+                ]:
+                    try:
+                        where_clause = f"WHERE dt = '{partition}'" if partition else ""
+                        total_query = f"SELECT COUNT(*) as total FROM {table} {where_clause}"
+                        unique_query = f"SELECT COUNT(DISTINCT {table.split('.')[1][:-1]}ID) as unique FROM {table} {where_clause}"
+                        
+                        total = spark.sql(total_query).collect()[0]['total']
+                        unique = spark.sql(unique_query).collect()[0]['unique']
+                        
+                        if total != unique:
+                            logging.warning(f"⚠️ {table}: {total} total records, {unique} unique IDs (potential duplicates)")
+                        else:
+                            logging.info(f"✅ {table}: {total} records, all unique")
+                    except Exception as dim_e:
+                        logging.warning(f"Could not check {table}: {dim_e}")
+                        
         except Exception as e:
             logging.warning(f"Debug query failed: {e}")
         
@@ -281,11 +376,42 @@ def run_dwd_orderdetails_etl(**context):
         df = df.withColumn('etl_created_date',current_timestamp()).withColumn('etl_batch_id',lit(context['ds_nodash'])).withColumn('is_empty_partition', lit(False))
         logging.info("✅ Transformation complete.")
 
+        # 添加数据去重检查，确保OrderDetailID唯一性
+        logging.info("Performing data deduplication check...")
+        initial_count = df.count()
+        df = df.dropDuplicates(['OrderDetailID'])
+        final_count = df.count()
+        
+        if initial_count != final_count:
+            duplicate_count = initial_count - final_count
+            logging.warning(f"⚠️ Found and removed {duplicate_count} duplicate records based on OrderDetailID")
+            logging.warning(f"Record count: {initial_count} → {final_count}")
+        else:
+            logging.info("✅ No duplicate records found.")
+            
+        record_count = final_count  # 更新记录数
+
         logging.info("Calculating statistics...")
         stats = df.agg(avg("UnitPrice").alias("avg_price"), spark_sum(when(col("IsHighValue"),1).otherwise(0)).alias("high_value_items")).collect()[0]
         qual_dist = {r['DataQualityLevel']:r['count'] for r in df.groupBy('DataQualityLevel').count().collect()}
-        transform_stats = {'total_records':record_count, 'avg_unit_price':stats['avg_price'], 'high_value_items':stats['high_value_items'], 'quality_distribution':qual_dist}
+        
+        # 添加重复数据检查统计信息
+        dedup_stats = {
+            'initial_records': initial_count,
+            'final_records': final_count,
+            'duplicates_removed': initial_count - final_count,
+            'deduplication_rate': (initial_count - final_count) / initial_count if initial_count > 0 else 0
+        }
+        
+        transform_stats = {
+            'total_records': record_count, 
+            'avg_unit_price': stats['avg_price'], 
+            'high_value_items': stats['high_value_items'], 
+            'quality_distribution': qual_dist,
+            'dedup_stats': dedup_stats
+        }
         context['task_instance'].xcom_push(key='transform_stats', value=transform_stats)
+        context['task_instance'].xcom_push(key='dedup_stats', value=dedup_stats)
 
         logging.info("Loading data to DWD layer...")
         table_name = "dwd_db.dwd_orderdetails"
@@ -297,6 +423,19 @@ def run_dwd_orderdetails_etl(**context):
             spark.catalog.uncacheTable("dwd_db.dwd_orderdetails")
         except:
             pass  # Table might not be cached
+        
+        # Check if table exists and has the correct schema
+        try:
+            existing_table = spark.table(table_name)
+            existing_columns = [field.name for field in existing_table.schema.fields]
+            has_empty_partition_column = 'is_empty_partition' in existing_columns
+            
+            if not has_empty_partition_column:
+                logging.warning(f"Table {table_name} exists but missing is_empty_partition column. Dropping table to recreate with correct schema.")
+                spark.sql(f"DROP TABLE IF EXISTS {table_name}")
+                logging.info(f"✅ Dropped table {table_name} for schema update")
+        except Exception as e:
+            logging.info(f"Table {table_name} does not exist or is not accessible: {e}")
         
         # Use a more robust write approach
         df_with_partition = df.withColumn('dt', lit(batch_date))
@@ -447,6 +586,7 @@ def create_orderdetails_hive_views(**context):
 
 
 def validate_orderdetails_dwd(**context):
+    """Validates the DWD OrderDetails data quality including duplicate checks."""
     status = context['task_instance'].xcom_pull(task_ids='run_dwd_orderdetails_etl_task', key='status')
     if status == 'SKIPPED_EMPTY_DATA':
         logging.warning("Skipping validation as no data was processed.")
@@ -457,17 +597,38 @@ def validate_orderdetails_dwd(**context):
 
     stats = context['task_instance'].xcom_pull(task_ids='run_dwd_orderdetails_etl_task', key='transform_stats')
     summary = context['task_instance'].xcom_pull(task_ids='run_dwd_orderdetails_etl_task', key='hdfs_load_summary')
+    dedup_stats = stats.get('dedup_stats', {}) if stats else {}
     
     issues = []
-    if stats['total_records'] != summary['total_records']:
-        issues.append("Record count mismatch between transform and load stages.")
-    if stats['total_records'] > 0 and stats['quality_distribution'].get('Poor', 0) / stats['total_records'] > 0.1:
-        issues.append("High ratio of poor quality data.")
+    warnings = []
+    
+    # 检查重复数据统计
+    if dedup_stats:
+        duplicates_removed = dedup_stats.get('duplicates_removed', 0)
+        dedup_rate = dedup_stats.get('deduplication_rate', 0)
+        
+        if duplicates_removed > 0:
+            warnings.append(f"Removed {duplicates_removed} duplicate OrderDetail records (dedup rate: {dedup_rate:.2%})")
+            logging.info(f"📊 OrderDetails deduplication stats: {dedup_stats}")
+    
+    # 原有的验证逻辑
+    if stats and summary:
+        if stats['total_records'] != summary['total_records']:
+            issues.append("Record count mismatch between transform and load stages.")
+                
+        if stats['total_records'] > 0:
+            poor_quality_ratio = stats['quality_distribution'].get('Poor', 0) / stats['total_records']
+            if poor_quality_ratio > 0.1:
+                issues.append(f"High ratio of poor quality data: {poor_quality_ratio:.2%}")
 
     if issues:
-        logging.warning(f"Validation issues found: {issues}")
-    else:
+        logging.warning(f"❌ Validation issues found: {issues}")
+    if warnings:
+        logging.warning(f"⚠️ Validation warnings: {warnings}")
+    if not issues and not warnings:
         logging.info("✅ Data validation passed.")
+    elif not issues:
+        logging.info("✅ Data validation passed with warnings.")
 
 
 with DAG(

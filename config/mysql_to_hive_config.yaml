@@ -10,22 +10,25 @@ tables:
     hive_table: ods.Orders
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: full  # ✅ 事务数据用增量同步
+    sync_mode: full # incremental  # ✅ 事务数据用增量同步
     enabled: true
+    primary_key: "OrderID"
 
   - mysql_table: OrderDetails
     hive_table: ods.OrderDetails
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: full  # ✅ 事务数据用增量同步
+    sync_mode: full #incremental  # ✅ 事务数据用增量同步
     enabled: true
+    primary_key: "OrderDetailID"
     
   - mysql_table: InventoryTransactions
     hive_table: ods.InventoryTransactions
     incremental_column: CreatedDate
     partition_column: dt
-    sync_mode: full  # ✅ 事务数据用增量同步
+    sync_mode: full #incremental  # ✅ 事务数据用增量同步
     enabled: true
+    primary_key: "TransactionID"
 
   # 全量同步表 - 维度数据，根据业务需求选择策略
   
@@ -38,6 +41,7 @@ tables:
     full_backup_strategy: keep_history  # 保留历史分区
     partition_retention_days: 90        # 保留90天的历史数据
     enabled: true
+    primary_key: "CustomerID"
 
   # 产品数据 - 保留历史，用于产品变更追踪
   - mysql_table: Products
@@ -48,6 +52,7 @@ tables:
     full_backup_strategy: keep_history  # 保留历史分区
     partition_retention_days: 180       # 保留180天的历史数据
     enabled: true
+    primary_key: "ProductID"
 
   # 仓库数据 - 只保留最新，变更不频繁
   - mysql_table: Warehouses
@@ -57,6 +62,7 @@ tables:
     sync_mode: full
     full_backup_strategy: latest_only   # 只保留最新数据
     enabled: true
+    primary_key: "WarehouseID"
 
   # 员工数据 - 保留历史，用于人事分析
   - mysql_table: Employees
@@ -67,6 +73,7 @@ tables:
     full_backup_strategy: keep_history  # 保留历史分区
     partition_retention_days: 365       # 保留1年的历史数据
     enabled: true
+    primary_key: "EmployeeID"
 
   # 工厂数据 - 只保留最新，变更不频繁
   - mysql_table: Factories
@@ -76,6 +83,7 @@ tables:
     sync_mode: full
     full_backup_strategy: latest_only   # 只保留最新数据
     enabled: true
+    primary_key: "FactoryID"
 
   # 库存数据 - 只保留最新，实时性要求高
   - mysql_table: Inventory
@@ -85,4 +93,5 @@ tables:
     sync_mode: full
     full_backup_strategy: latest_only   # 只保留最新数据
     enabled: true
+    primary_key: "InventoryID"
   

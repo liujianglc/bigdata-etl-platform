@@ -1,0 +1,60 @@
+# 重复数据防护配置
+# 用于防止DWD层出现重复数据
+
+duplicate_prevention:
+  # 全局去重策略
+  global_strategy:
+    enable_deduplication: true
+    dedup_columns: ['OrderID']  # 主键字段
+    dedup_method: 'drop_duplicates'  # drop_duplicates, window_function
+    
+  # 维度表去重策略
+  dimension_tables:
+    ods.Customers:
+      enable_unique_join: true
+      unique_key: 'CustomerID'
+      sort_columns: ['UpdatedDate DESC', 'CreatedDate DESC']
+      description: "客户表去重，选择最新记录"
+      
+    ods.Employees:
+      enable_unique_join: true
+      unique_key: 'EmployeeID'
+      sort_columns: ['UpdatedDate DESC', 'CreatedDate DESC']
+      description: "员工表去重，选择最新记录"
+      
+    ods.Products:
+      enable_unique_join: true
+      unique_key: 'ProductID'
+      sort_columns: ['UpdatedDate DESC', 'CreatedDate DESC']
+      description: "产品表去重，选择最新记录"
+
+# 数据质量检查配置
+data_quality_checks:
+  # 重复数据检查阈值
+  duplicate_tolerance:
+    max_duplicate_rate: 0.05  # 最大允许重复率 5%
+    warning_duplicate_rate: 0.01  # 警告重复率 1%
+    
+  # 检查规则
+  validation_rules:
+    - name: "primary_key_uniqueness"
+      description: "检查主键唯一性"
+      columns: ['OrderID']
+      rule_type: "unique"
+      
+    - name: "dimension_join_integrity"
+      description: "检查维度表JOIN完整性"
+      rule_type: "referential_integrity"
+      
+# 监控和告警配置
+monitoring:
+  enable_duplicate_alerts: true
+  alert_thresholds:
+    high_duplicate_rate: 0.1
+    consecutive_duplicate_days: 3
+    
+  # 日志记录级别
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_duplicate_details: true
+
+

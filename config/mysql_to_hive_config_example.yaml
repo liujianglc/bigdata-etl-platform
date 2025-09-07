@@ -1,0 +1,104 @@
+# MySQL到Hive同步配置示例
+# 包含重复数据防护配置
+
+mysql:
+  url: "jdbc:mysql://mysql-server:3306/source_db"
+  user: "mysql_user"
+  password: "mysql_password"
+  driver: "com.mysql.cj.jdbc.Driver"
+
+tables:
+  # 订单表配置 - 增量同步，包含主键防重复
+  - mysql_table: "Orders"
+    hive_table: "ods.Orders"
+    enabled: true
+    sync_mode: "incremental"  # incremental, full
+    incremental_column: "update_time"  # 增量字段
+    partition_column: "dt"  # 分区字段
+    primary_key: "OrderID"  # 主键，用于去重
+    full_backup_strategy: "keep_history"  # keep_history, latest_only
+    partition_retention_days: 30  # 分区保留天数
+    description: "订单表增量同步，按OrderID去重"
+
+  # 客户表配置 - 全量同步，保留历史
+  - mysql_table: "Customers"
+    hive_table: "ods.Customers"
+    enabled: true
+    sync_mode: "full"
+    incremental_column: "update_time"
+    partition_column: "dt"
+    primary_key: "CustomerID"  # 主键去重
+    full_backup_strategy: "keep_history"  # 保留历史分区
+    partition_retention_days: 90
+    description: "客户表全量同步，保留历史"
+
+  # 员工表配置 - 全量同步，只保留最新
+  - mysql_table: "Employees"
+    hive_table: "ods.Employees"
+    enabled: true
+    sync_mode: "full"
+    incremental_column: "update_time"
+    partition_column: "dt"
+    primary_key: "EmployeeID"
+    full_backup_strategy: "latest_only"  # 只保留最新数据
+    description: "员工表全量同步，只保留最新数据"
+
+  # 产品表配置 - 增量同步，无分区
+  - mysql_table: "Products"
+    hive_table: "ods.Products"
+    enabled: true
+    sync_mode: "incremental"
+    incremental_column: "update_time"
+    partition_column: "dt"  # 建议添加分区
+    primary_key: "ProductID"
+    full_backup_strategy: "keep_history"
+    partition_retention_days: 60
+    description: "产品表增量同步"
+
+  # 订单详情表配置 - 增量同步
+  - mysql_table: "OrderDetails"
+    hive_table: "ods.OrderDetails"
+    enabled: true
+    sync_mode: "incremental"
+    incremental_column: "update_time"
+    partition_column: "dt"
+    primary_key: "OrderDetailID"
+    full_backup_strategy: "keep_history"
+    partition_retention_days: 30
+    description: "订单详情表增量同步"
+
+# 数据质量配置
+data_quality:
+  # 重复数据检查
+  duplicate_check:
+    enabled: true
+    log_duplicate_stats: true
+    fail_on_high_duplicate_rate: false  # 是否在高重复率时失败
+    max_duplicate_rate: 0.1  # 最大允许重复率 10%
+  
+  # 数据验证
+  validation:
+    enabled: true
+    check_record_count: true
+    check_partition_integrity: true
+    
+# 性能配置
+performance:
+  # MySQL连接配置
+  mysql_fetch_size: 10000
+  mysql_connection_timeout: 60000
+  mysql_socket_timeout: 300000
+  
+  # Spark配置
+  spark_partitions: 4
+  repartition_count: 2
+  enable_caching: true
+  
+# 监控配置
+monitoring:
+  log_level: "INFO"
+  enable_detailed_logging: true
+  log_duplicate_details: true
+  alert_on_failures: true
+
+
