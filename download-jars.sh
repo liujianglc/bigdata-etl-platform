@@ -9,7 +9,7 @@ curl -L -o jars/postgresql-42.6.0.jar https://jdbc.postgresql.org/download/postg
 
 # Download MySQL JDBC driver (if needed)
 echo "Downloading MySQL JDBC driver..."
-curl -L -o jars/mysql-connector-java-8.0.33.jar https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.33/mysql-connector-java-8.0.33.jar
+curl -L -o jars/mysql-connector-java-8.0.33.jar https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar
 
 echo "JAR files downloaded successfully!"
 echo "Files in jars directory:"

@@ -280,8 +280,28 @@ def create_spark():
         pass
     
     try:
+        # 智能加载MySQL驱动
+        mysql_jar_paths = [
+            "/opt/spark/jars/custom/mysql-connector-java-8.0.33.jar",  # Docker compose挂载的路径
+            "/opt/airflow/jars/mysql-connector-java-8.0.33.jar",
+            "/home/airflow/.local/lib/python3.8/site-packages/pyspark/jars/mysql-connector-java-8.0.33.jar"
+        ]
+        
+        # 检查是否有本地JAR文件
+        local_jar_found = False
+        for jar_path in mysql_jar_paths:
+            if os.path.exists(jar_path):
+                builder = builder.config("spark.jars", jar_path)
+                logging.info(f"主配置找到本地MySQL JAR文件: {jar_path}")
+                local_jar_found = True
+                break
+        
+        if not local_jar_found:
+            # 如果没有本地JAR，使用packages方式
+            builder = builder.config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33")
+            logging.info("主配置使用packages方式加载MySQL驱动")
+        
         spark = builder \
-            .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
             .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
             .config("spark.sql.catalogImplementation", "hive") \
             .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
@@ -331,7 +351,8 @@ def create_spark():
         # 尝试容器环境的最小配置
         logging.info("尝试使用容器环境最小配置创建Spark会话...")
         try:
-            spark = SparkSession.builder \
+            # 尝试多种方式加载MySQL驱动
+            builder_minimal = SparkSession.builder \
                 .appName("MySQL to Hive Sync - Container Minimal") \
                 .master("local[1]") \
                 .config("spark.driver.memory", "1g") \
@@ -346,8 +367,31 @@ def create_spark():
                 .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
                 .config("spark.hadoop.hive.metastore.uris", "thrift://hive-metastore:9083") \
                 .config("spark.sql.warehouse.dir", "hdfs://namenode:9000/user/hive/warehouse") \
-                .enableHiveSupport() \
-                .getOrCreate()
+                .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+                .config("spark.sql.adaptive.enabled", "false")
+            
+            # 尝试不同的MySQL驱动加载方式
+            mysql_jar_paths = [
+                "/opt/spark/jars/custom/mysql-connector-java-8.0.33.jar",  # Docker compose挂载的路径
+                "/opt/airflow/jars/mysql-connector-java-8.0.33.jar",
+                "/home/airflow/.local/lib/python3.8/site-packages/pyspark/jars/mysql-connector-java-8.0.33.jar"
+            ]
+            
+            # 检查是否有本地JAR文件
+            local_jar_found = False
+            for jar_path in mysql_jar_paths:
+                if os.path.exists(jar_path):
+                    builder_minimal = builder_minimal.config("spark.jars", jar_path)
+                    logging.info(f"找到本地MySQL JAR文件: {jar_path}")
+                    local_jar_found = True
+                    break
+            
+            if not local_jar_found:
+                # 如果没有本地JAR，使用packages方式
+                builder_minimal = builder_minimal.config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33")
+                logging.info("使用packages方式加载MySQL驱动")
+            
+            spark = builder_minimal.enableHiveSupport().getOrCreate()
             
             logging.info("✅ 使用容器环境最小配置创建Spark会话成功")
             return spark
@@ -366,6 +410,7 @@ def create_spark():
                 spark = SparkSession.builder \
                     .appName("MySQL to Hive Sync - Pure Spark") \
                     .master("local[1]") \
+                    .config("spark.jars.packages", "mysql:mysql-connector-java:8.0.33") \
                     .config("spark.driver.memory", "1g") \
                     .config("spark.executor.memory", "1g") \
                     .config("spark.local.dir", "/tmp/spark") \
