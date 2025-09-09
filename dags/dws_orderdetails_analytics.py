@@ -96,6 +96,68 @@ def run_dws_orderdetails_analytics_etl(**context):
         # 跟踪实际创建的表
         tables_created_list = []
         
+        # DWS OrderDetails 表通用的元数据清理和刷新函数
+        def cleanup_dws_orderdetails_metadata(table_name, batch_date, location):
+            """清理 DWS OrderDetails 表的元数据和缓存"""
+            try:
+                spark.catalog.uncacheTable(f"dws_db.{table_name}")
+                logging.info(f"清除 DWS OrderDetails 表缓存: {table_name}")
+            except:
+                pass
+            
+            try:
+                spark.sql(f"REFRESH TABLE dws_db.{table_name}")
+                logging.info(f"刷新 DWS OrderDetails 表元数据: {table_name}")
+            except Exception as e:
+                logging.warning(f"刷新 DWS OrderDetails 表元数据失败: {e}")
+            
+            try:
+                # 检查并清理无效分区
+                existing_partitions = spark.sql(f"SHOW PARTITIONS dws_db.{table_name}").collect()
+                partition_to_check = f"dt={batch_date}"
+                
+                if any(partition_to_check in str(p) for p in existing_partitions):
+                    logging.info(f"清理 DWS OrderDetails 分区: {partition_to_check}")
+                    spark.sql(f"ALTER TABLE dws_db.{table_name} DROP IF EXISTS PARTITION (dt='{batch_date}')")
+                    
+                    # 删除 HDFS 目录
+                    partition_path = f"{location}/dt={batch_date}"
+                    try:
+                        hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+                        fs = spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_conf)
+                        path = spark.sparkContext._jvm.org.apache.hadoop.fs.Path(partition_path)
+                        if fs.exists(path):
+                            fs.delete(path, True)
+                            logging.info(f"删除 DWS OrderDetails HDFS 分区目录: {partition_path}")
+                    except Exception as hdfs_e:
+                        logging.warning(f"删除 DWS OrderDetails HDFS 分区目录失败: {hdfs_e}")
+            except Exception as e:
+                if "Table or view not found" not in str(e):
+                    logging.warning(f"DWS OrderDetails 分区清理过程出错: {e}")
+
+        def refresh_dws_orderdetails_metadata(table_name, batch_date):
+            """刷新 DWS OrderDetails 表元数据"""
+            try:
+                spark.sql(f"MSCK REPAIR TABLE dws_db.{table_name}")
+                logging.info(f"✅ DWS OrderDetails MSCK REPAIR 成功: {table_name}")
+            except Exception as e:
+                logging.warning(f"⚠️ DWS OrderDetails MSCK REPAIR 失败: {e}")
+            
+            try:
+                spark.sql(f"REFRESH TABLE dws_db.{table_name}")
+                logging.info(f"✅ DWS OrderDetails 表刷新成功: {table_name}")
+            except Exception as e:
+                logging.warning(f"⚠️ DWS OrderDetails 表刷新失败: {e}")
+            
+            # 验证分区和数据
+            try:
+                test_count = spark.sql(f"SELECT COUNT(*) as cnt FROM dws_db.{table_name} WHERE dt='{batch_date}'").collect()[0]['cnt']
+                logging.info(f"✅ DWS OrderDetails 数据验证成功，分区 dt={batch_date} 记录数: {test_count}")
+                return test_count
+            except Exception as e:
+                logging.warning(f"⚠️ DWS OrderDetails 分区验证失败: {e}")
+                return 0
+        
         # --- 1. Daily Aggregation ---
         logging.info(f"Starting Daily Aggregation for date: {batch_date}")
         daily_df = dwd_df_30d.filter(col("dt") == batch_date)
@@ -141,69 +203,6 @@ def run_dws_orderdetails_analytics_etl(**context):
             # DWS OrderDetails 日汇总表元数据清理和写入
             table_name = "dws_orderdetails_daily_summary"
             table_location = "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orderdetails_daily_summary"
-            
-            # 清理元数据和缓存
-            def cleanup_dws_orderdetails_metadata(table_name, batch_date, location):
-                """清理 DWS OrderDetails 表的元数据和缓存"""
-                try:
-                    spark.catalog.uncacheTable(f"dws_db.{table_name}")
-                    logging.info(f"清除 DWS OrderDetails 表缓存: {table_name}")
-                except:
-                    pass
-                
-                try:
-                    spark.sql(f"REFRESH TABLE dws_db.{table_name}")
-                    logging.info(f"刷新 DWS OrderDetails 表元数据: {table_name}")
-                except Exception as e:
-                    logging.warning(f"刷新 DWS OrderDetails 表元数据失败: {e}")
-                
-                try:
-                    # 检查并清理无效分区
-                    existing_partitions = spark.sql(f"SHOW PARTITIONS dws_db.{table_name}").collect()
-                    partition_to_check = f"dt={batch_date}"
-                    
-                    if any(partition_to_check in str(p) for p in existing_partitions):
-                        logging.info(f"清理 DWS OrderDetails 分区: {partition_to_check}")
-                        spark.sql(f"ALTER TABLE dws_db.{table_name} DROP IF EXISTS PARTITION (dt='{batch_date}')")
-                        
-                        # 删除 HDFS 目录
-                        partition_path = f"{location}/dt={batch_date}"
-                        try:
-                            hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
-                            fs = spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_conf)
-                            path = spark.sparkContext._jvm.org.apache.hadoop.fs.Path(partition_path)
-                            if fs.exists(path):
-                                fs.delete(path, True)
-                                logging.info(f"删除 DWS OrderDetails HDFS 分区目录: {partition_path}")
-                        except Exception as hdfs_e:
-                            logging.warning(f"删除 DWS OrderDetails HDFS 分区目录失败: {hdfs_e}")
-                except Exception as e:
-                    if "Table or view not found" not in str(e):
-                        logging.warning(f"DWS OrderDetails 分区清理过程出错: {e}")
-            
-            # 强化的元数据刷新
-            def refresh_dws_orderdetails_metadata(table_name, batch_date):
-                """刷新 DWS OrderDetails 表元数据"""
-                try:
-                    spark.sql(f"MSCK REPAIR TABLE dws_db.{table_name}")
-                    logging.info(f"✅ DWS OrderDetails MSCK REPAIR 成功: {table_name}")
-                except Exception as e:
-                    logging.warning(f"⚠️ DWS OrderDetails MSCK REPAIR 失败: {e}")
-                
-                try:
-                    spark.sql(f"REFRESH TABLE dws_db.{table_name}")
-                    logging.info(f"✅ DWS OrderDetails 表刷新成功: {table_name}")
-                except Exception as e:
-                    logging.warning(f"⚠️ DWS OrderDetails 表刷新失败: {e}")
-                
-                # 验证分区和数据
-                try:
-                    test_count = spark.sql(f"SELECT COUNT(*) as cnt FROM dws_db.{table_name} WHERE dt='{batch_date}'").collect()[0]['cnt']
-                    logging.info(f"✅ DWS OrderDetails 数据验证成功，分区 dt={batch_date} 记录数: {test_count}")
-                    return test_count
-                except Exception as e:
-                    logging.warning(f"⚠️ DWS OrderDetails 分区验证失败: {e}")
-                    return 0
             
             # 执行清理
             cleanup_dws_orderdetails_metadata(table_name, batch_date, table_location)
