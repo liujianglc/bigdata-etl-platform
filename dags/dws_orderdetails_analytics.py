@@ -138,10 +138,85 @@ def run_dws_orderdetails_analytics_etl(**context):
              .withColumn("delivery_rate", ((col("delivered_items") / col("total_items") * 100)).cast(RATE)) \
              .withColumn("cancellation_rate", ((col("cancelled_items") / col("total_items") * 100)).cast(RATE))
             
+            # DWS OrderDetails 日汇总表元数据清理和写入
+            table_name = "dws_orderdetails_daily_summary"
+            table_location = "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orderdetails_daily_summary"
+            
+            # 清理元数据和缓存
+            def cleanup_dws_orderdetails_metadata(table_name, batch_date, location):
+                """清理 DWS OrderDetails 表的元数据和缓存"""
+                try:
+                    spark.catalog.uncacheTable(f"dws_db.{table_name}")
+                    logging.info(f"清除 DWS OrderDetails 表缓存: {table_name}")
+                except:
+                    pass
+                
+                try:
+                    spark.sql(f"REFRESH TABLE dws_db.{table_name}")
+                    logging.info(f"刷新 DWS OrderDetails 表元数据: {table_name}")
+                except Exception as e:
+                    logging.warning(f"刷新 DWS OrderDetails 表元数据失败: {e}")
+                
+                try:
+                    # 检查并清理无效分区
+                    existing_partitions = spark.sql(f"SHOW PARTITIONS dws_db.{table_name}").collect()
+                    partition_to_check = f"dt={batch_date}"
+                    
+                    if any(partition_to_check in str(p) for p in existing_partitions):
+                        logging.info(f"清理 DWS OrderDetails 分区: {partition_to_check}")
+                        spark.sql(f"ALTER TABLE dws_db.{table_name} DROP IF EXISTS PARTITION (dt='{batch_date}')")
+                        
+                        # 删除 HDFS 目录
+                        partition_path = f"{location}/dt={batch_date}"
+                        try:
+                            hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+                            fs = spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_conf)
+                            path = spark.sparkContext._jvm.org.apache.hadoop.fs.Path(partition_path)
+                            if fs.exists(path):
+                                fs.delete(path, True)
+                                logging.info(f"删除 DWS OrderDetails HDFS 分区目录: {partition_path}")
+                        except Exception as hdfs_e:
+                            logging.warning(f"删除 DWS OrderDetails HDFS 分区目录失败: {hdfs_e}")
+                except Exception as e:
+                    if "Table or view not found" not in str(e):
+                        logging.warning(f"DWS OrderDetails 分区清理过程出错: {e}")
+            
+            # 强化的元数据刷新
+            def refresh_dws_orderdetails_metadata(table_name, batch_date):
+                """刷新 DWS OrderDetails 表元数据"""
+                try:
+                    spark.sql(f"MSCK REPAIR TABLE dws_db.{table_name}")
+                    logging.info(f"✅ DWS OrderDetails MSCK REPAIR 成功: {table_name}")
+                except Exception as e:
+                    logging.warning(f"⚠️ DWS OrderDetails MSCK REPAIR 失败: {e}")
+                
+                try:
+                    spark.sql(f"REFRESH TABLE dws_db.{table_name}")
+                    logging.info(f"✅ DWS OrderDetails 表刷新成功: {table_name}")
+                except Exception as e:
+                    logging.warning(f"⚠️ DWS OrderDetails 表刷新失败: {e}")
+                
+                # 验证分区和数据
+                try:
+                    test_count = spark.sql(f"SELECT COUNT(*) as cnt FROM dws_db.{table_name} WHERE dt='{batch_date}'").collect()[0]['cnt']
+                    logging.info(f"✅ DWS OrderDetails 数据验证成功，分区 dt={batch_date} 记录数: {test_count}")
+                    return test_count
+                except Exception as e:
+                    logging.warning(f"⚠️ DWS OrderDetails 分区验证失败: {e}")
+                    return 0
+            
+            # 执行清理
+            cleanup_dws_orderdetails_metadata(table_name, batch_date, table_location)
+            
+            # 写入数据
             daily_summary_with_dt = daily_summary.withColumn("dt", lit(batch_date))
-            daily_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orderdetails_daily_summary").saveAsTable("dws_orderdetails_daily_summary")
-            tables_created_list.append("dws_orderdetails_daily_summary")
-            logging.info("✅ Daily aggregation complete and loaded.")
+            daily_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
+                .option("path", table_location).saveAsTable(f"dws_db.{table_name}")
+            
+            # 执行元数据刷新
+            row_count = refresh_dws_orderdetails_metadata(table_name, batch_date)
+            tables_created_list.append(table_name)
+            logging.info(f"✅ Daily aggregation complete and loaded. Row count: {row_count}")
         elif has_empty_partition:
             # Create zero-value aggregation for empty partition days
             logging.info(f"Creating zero-value daily summary for empty partition date: {batch_date}")
@@ -219,10 +294,22 @@ def run_dws_orderdetails_analytics_etl(**context):
                       .when(col("total_revenue") >= 10000, 60)
                       .otherwise(40) * 0.3)).cast(AVERAGE))
 
+        # DWS 产品分析表元数据清理和写入
+        table_name = "dws_product_analytics"
+        table_location = "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_product_analytics"
+        
+        # 使用通用清理函数
+        cleanup_dws_orderdetails_metadata(table_name, batch_date, table_location)
+        
+        # 写入数据
         product_analytics_with_dt = product_analytics.withColumn("dt", lit(batch_date))
-        product_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_product_analytics").saveAsTable("dws_product_analytics")
-        tables_created_list.append("dws_product_analytics")
-        logging.info("✅ Product analytics complete and loaded.")
+        product_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
+            .option("path", table_location).saveAsTable(f"dws_db.{table_name}")
+        
+        # 刷新元数据并验证
+        row_count = refresh_dws_orderdetails_metadata(table_name, batch_date)
+        tables_created_list.append(table_name)
+        logging.info(f"✅ Product analytics complete and loaded. Row count: {row_count}")
 
         # --- 3. Warehouse Analytics ---
         logging.info("Starting Warehouse Analytics for the last 30 days.")
@@ -249,10 +336,22 @@ def run_dws_orderdetails_analytics_etl(**context):
                     .when(col("delivery_rate") >= 80, "C")
                     .otherwise("D"))
 
+        # DWS 仓库分析表元数据清理和写入
+        table_name = "dws_warehouse_analytics"
+        table_location = "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_warehouse_analytics"
+        
+        # 使用通用清理函数
+        cleanup_dws_orderdetails_metadata(table_name, batch_date, table_location)
+        
+        # 写入数据
         warehouse_analytics_with_dt = warehouse_analytics.withColumn("dt", lit(batch_date))
-        warehouse_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet").option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_warehouse_analytics").saveAsTable("dws_warehouse_analytics")
-        tables_created_list.append("dws_warehouse_analytics")
-        logging.info("✅ Warehouse analytics complete and loaded.")
+        warehouse_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
+            .option("path", table_location).saveAsTable(f"dws_db.{table_name}")
+        
+        # 刷新元数据并验证
+        row_count = refresh_dws_orderdetails_metadata(table_name, batch_date)
+        tables_created_list.append(table_name)
+        logging.info(f"✅ Warehouse analytics complete and loaded. Row count: {row_count}")
 
         dwd_df_30d.unpersist()
         context['task_instance'].xcom_push(key='status', value='SUCCESS')

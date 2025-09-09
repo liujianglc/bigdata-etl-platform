@@ -375,35 +375,67 @@ def run_dwd_orders_etl(**context):
         location = "hdfs://namenode:9000/user/hive/warehouse/dwd_db.db/dwd_orders"
         spark.sql("CREATE DATABASE IF NOT EXISTS dwd_db")
         
-        # Clear any existing cache for this table to avoid file conflicts
-        try:
-            spark.catalog.uncacheTable("dwd_db.dwd_orders")
-        except:
-            pass  # Table might not be cached
-        
-        # Handle schema compatibility by dropping problematic partition if it exists
-        try:
-            # Check if table exists and has the problematic partition
-            existing_partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
-            partition_to_drop = f"dt={batch_date}"
+        # 强化的元数据同步和缓存清理
+        def cleanup_metadata_and_cache(table_name, batch_date):
+            """清理元数据和缓存，确保数据一致性"""
+            try:
+                # 1. 清除所有相关缓存
+                spark.catalog.uncacheTable(table_name)
+                logging.info(f"清除表缓存: {table_name}")
+            except:
+                pass
             
-            if any(partition_to_drop in str(p) for p in existing_partitions):
-                logging.info(f"Dropping existing partition {partition_to_drop} to resolve schema conflicts")
-                spark.sql(f"ALTER TABLE {table_name} DROP IF EXISTS PARTITION (dt='{batch_date}')")
+            try:
+                # 2. 刷新表元数据
+                spark.sql(f"REFRESH TABLE {table_name}")
+                logging.info(f"刷新表元数据: {table_name}")
+            except Exception as e:
+                logging.warning(f"刷新表元数据失败: {e}")
+            
+            try:
+                # 3. 检查并清理无效分区
+                existing_partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
+                partition_to_check = f"dt={batch_date}"
                 
-                # Also remove the HDFS directory for this partition
-                partition_path = f"{location}/dt={batch_date}"
-                try:
-                    spark.sql(f"dfs -rm -r -f {partition_path}")
-                    logging.info(f"Removed HDFS partition directory: {partition_path}")
-                except Exception as hdfs_e:
-                    logging.warning(f"Could not remove HDFS partition directory: {hdfs_e}")
+                # 检查分区是否存在于元数据中
+                partition_exists_in_metadata = any(partition_to_check in str(p) for p in existing_partitions)
+                
+                if partition_exists_in_metadata:
+                    logging.info(f"发现分区 {partition_to_check} 在元数据中，准备清理")
                     
-        except Exception as e:
-            if "Table or view not found" in str(e):
-                logging.info("Table doesn't exist yet, will create new one")
-            else:
-                logging.warning(f"Could not check/drop existing partition: {e}")
+                    # 删除分区元数据
+                    spark.sql(f"ALTER TABLE {table_name} DROP IF EXISTS PARTITION (dt='{batch_date}')")
+                    logging.info(f"删除分区元数据: dt='{batch_date}'")
+                    
+                    # 删除 HDFS 目录
+                    partition_path = f"{location}/dt={batch_date}"
+                    try:
+                        # 使用 Hadoop 文件系统 API 删除
+                        hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+                        fs = spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_conf)
+                        path = spark.sparkContext._jvm.org.apache.hadoop.fs.Path(partition_path)
+                        if fs.exists(path):
+                            fs.delete(path, True)  # True 表示递归删除
+                            logging.info(f"删除 HDFS 分区目录: {partition_path}")
+                        else:
+                            logging.info(f"HDFS 分区目录不存在: {partition_path}")
+                    except Exception as hdfs_e:
+                        logging.warning(f"删除 HDFS 分区目录失败: {hdfs_e}")
+                        # 备用方法：使用 Spark SQL 删除
+                        try:
+                            spark.sql(f"dfs -rm -r -f {partition_path}")
+                            logging.info(f"使用 Spark SQL 删除 HDFS 目录: {partition_path}")
+                        except Exception as sql_e:
+                            logging.warning(f"Spark SQL 删除也失败: {sql_e}")
+                
+            except Exception as e:
+                if "Table or view not found" in str(e):
+                    logging.info("表不存在，将创建新表")
+                else:
+                    logging.warning(f"分区清理过程出错: {e}")
+        
+        # 执行清理
+        cleanup_metadata_and_cache(table_name, batch_date)
         
         # Use a more robust write approach
         df_with_partition = df.withColumn('dt', lit(batch_date))
@@ -416,22 +448,51 @@ def run_dwd_orders_etl(**context):
           .option("path", location) \
           .saveAsTable(table_name)
 
-        # Comprehensive metadata refresh
-        try:
-            spark.sql("MSCK REPAIR TABLE dwd_db.dwd_orders")
-        except Exception as e:
-            logging.warning(f"MSCK REPAIR failed: {e}")
+        # 强化的元数据刷新和同步
+        def refresh_table_metadata(table_name):
+            """执行全面的表元数据刷新"""
+            try:
+                # 1. MSCK REPAIR TABLE - 重新同步分区
+                spark.sql(f"MSCK REPAIR TABLE {table_name}")
+                logging.info(f"✅ MSCK REPAIR 成功: {table_name}")
+            except Exception as e:
+                logging.warning(f"⚠️ MSCK REPAIR 失败: {e}")
+            
+            try:
+                # 2. REFRESH TABLE - 刷新表元数据
+                spark.sql(f"REFRESH TABLE {table_name}")
+                logging.info(f"✅ 表刷新成功: {table_name}")
+            except Exception as e:
+                logging.warning(f"⚠️ 表刷新失败: {e}")
+            
+            try:
+                # 3. 清除全局缓存
+                spark.catalog.clearCache()
+                logging.info("✅ 全局缓存清除成功")
+            except Exception as e:
+                logging.warning(f"⚠️ 全局缓存清除失败: {e}")
+            
+            # 4. 验证分区是否正确创建
+            try:
+                partitions = spark.sql(f"SHOW PARTITIONS {table_name}").collect()
+                current_partitions = [p['partition'] for p in partitions]
+                expected_partition = f"dt={batch_date}"
+                
+                if any(expected_partition in partition for partition in current_partitions):
+                    logging.info(f"✅ 分区验证成功: {expected_partition}")
+                    
+                    # 验证数据可访问性
+                    test_count = spark.sql(f"SELECT COUNT(*) as cnt FROM {table_name} WHERE dt='{batch_date}'").collect()[0]['cnt']
+                    logging.info(f"✅ 数据验证成功，分区 dt={batch_date} 记录数: {test_count}")
+                else:
+                    logging.warning(f"⚠️ 预期分区 {expected_partition} 未找到")
+                    logging.info(f"当前分区列表: {current_partitions}")
+                    
+            except Exception as e:
+                logging.warning(f"⚠️ 分区验证失败: {e}")
         
-        try:
-            spark.sql("REFRESH TABLE dwd_db.dwd_orders")
-        except Exception as e:
-            logging.warning(f"REFRESH TABLE failed: {e}")
-        
-        # Clear catalog cache to ensure fresh metadata
-        try:
-            spark.catalog.clearCache()
-        except Exception as e:
-            logging.warning(f"Clear cache failed: {e}")
+        # 执行元数据刷新
+        refresh_table_metadata(table_name)
 
         df.unpersist()
         logging.info("✅ Data loaded successfully.")

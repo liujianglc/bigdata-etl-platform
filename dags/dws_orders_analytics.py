@@ -325,31 +325,86 @@ def run_dws_orders_analytics_etl(**context):
              .withColumn("data_quality_score", (((col("good_quality_orders") * 4 + (col("total_orders") - col("good_quality_orders") - col("poor_quality_orders")) * 2) / col("total_orders"))).cast(RATE))
             
             try:
+                # DWS 表元数据清理和写入
+                table_name = "dws_orders_daily_summary"
+                table_location = "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary"
+                
+                # 清理元数据和缓存
+                def cleanup_dws_metadata(table_name, batch_date, location):
+                    """清理 DWS 表的元数据和缓存"""
+                    try:
+                        spark.catalog.uncacheTable(f"dws_db.{table_name}")
+                        logging.info(f"清除 DWS 表缓存: {table_name}")
+                    except:
+                        pass
+                    
+                    try:
+                        spark.sql(f"REFRESH TABLE dws_db.{table_name}")
+                        logging.info(f"刷新 DWS 表元数据: {table_name}")
+                    except Exception as e:
+                        logging.warning(f"刷新 DWS 表元数据失败: {e}")
+                    
+                    try:
+                        # 检查并清理无效分区
+                        existing_partitions = spark.sql(f"SHOW PARTITIONS dws_db.{table_name}").collect()
+                        partition_to_check = f"dt={batch_date}"
+                        
+                        if any(partition_to_check in str(p) for p in existing_partitions):
+                            logging.info(f"清理 DWS 分区: {partition_to_check}")
+                            spark.sql(f"ALTER TABLE dws_db.{table_name} DROP IF EXISTS PARTITION (dt='{batch_date}')")
+                            
+                            # 删除 HDFS 目录
+                            partition_path = f"{location}/dt={batch_date}"
+                            try:
+                                hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+                                fs = spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_conf)
+                                path = spark.sparkContext._jvm.org.apache.hadoop.fs.Path(partition_path)
+                                if fs.exists(path):
+                                    fs.delete(path, True)
+                                    logging.info(f"删除 DWS HDFS 分区目录: {partition_path}")
+                            except Exception as hdfs_e:
+                                logging.warning(f"删除 DWS HDFS 分区目录失败: {hdfs_e}")
+                    except Exception as e:
+                        if "Table or view not found" not in str(e):
+                            logging.warning(f"DWS 分区清理过程出错: {e}")
+                
+                # 执行清理
+                cleanup_dws_metadata(table_name, batch_date, table_location)
+                
                 # 写入数据到表
                 daily_summary_with_dt = daily_summary.withColumn("dt", lit(batch_date))
                 daily_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
-                    .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_daily_summary") \
-                    .saveAsTable("dws_orders_daily_summary")
+                    .option("path", table_location) \
+                    .saveAsTable(f"dws_db.{table_name}")
                 
-                # 执行表修复和刷新
-                try:
-                    spark.sql("MSCK REPAIR TABLE dws_db.dws_orders_daily_summary")
-                    logging.info("🔧 Executed MSCK REPAIR for dws_orders_daily_summary")
-                except Exception as repair_e:
-                    logging.warning(f"⚠️  MSCK REPAIR failed for dws_orders_daily_summary: {repair_e}")
+                # 强化的元数据刷新
+                def refresh_dws_metadata(table_name, batch_date):
+                    """刷新 DWS 表元数据"""
+                    try:
+                        spark.sql(f"MSCK REPAIR TABLE dws_db.{table_name}")
+                        logging.info(f"✅ DWS MSCK REPAIR 成功: {table_name}")
+                    except Exception as e:
+                        logging.warning(f"⚠️ DWS MSCK REPAIR 失败: {e}")
+                    
+                    try:
+                        spark.sql(f"REFRESH TABLE dws_db.{table_name}")
+                        logging.info(f"✅ DWS 表刷新成功: {table_name}")
+                    except Exception as e:
+                        logging.warning(f"⚠️ DWS 表刷新失败: {e}")
+                    
+                    # 验证分区和数据
+                    try:
+                        test_count = spark.sql(f"SELECT COUNT(*) as cnt FROM dws_db.{table_name} WHERE dt='{batch_date}'").collect()[0]['cnt']
+                        logging.info(f"✅ DWS 数据验证成功，分区 dt={batch_date} 记录数: {test_count}")
+                        return test_count
+                    except Exception as e:
+                        logging.warning(f"⚠️ DWS 分区验证失败: {e}")
+                        return 0
                 
-                spark.sql("REFRESH TABLE dws_db.dws_orders_daily_summary")
-                
-                # 验证表创建成功
-                try:
-                    row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_daily_summary").collect()[0]['cnt']
-                    tables_created_list.append("dws_orders_daily_summary")
-                    logging.info(f"✅ Daily aggregation complete and loaded. Row count: {row_count}")
-                except Exception as count_e:
-                    logging.error(f"❌ Failed to count rows in dws_orders_daily_summary: {count_e}")
-                    # 仍然添加到列表，因为表可能存在但为空
-                    tables_created_list.append("dws_orders_daily_summary")
-                    logging.warning("⚠️  Added table to created list despite count failure")
+                # 执行元数据刷新
+                row_count = refresh_dws_metadata(table_name, batch_date)
+                tables_created_list.append(table_name)
+                logging.info(f"✅ Daily aggregation complete and loaded. Row count: {row_count}")
                     
             except Exception as e:
                 logging.error(f"❌ Failed to create daily summary table: {e}")
@@ -439,29 +494,23 @@ def run_dws_orders_analytics_etl(**context):
              .withColumn("large_order_ratio", ((col("large_orders") / col("total_orders") * 100)).cast(DoubleType()))
 
             try:
+                # DWS 月汇总表元数据清理和写入
+                table_name = "dws_orders_monthly_summary"
+                table_location = "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_monthly_summary"
+                
+                # 使用通用的清理函数
+                cleanup_dws_metadata(table_name, batch_date, table_location)
+                
+                # 写入数据
                 monthly_summary_with_dt = monthly_summary.withColumn("dt", lit(batch_date))
                 monthly_summary_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
-                    .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_orders_monthly_summary") \
-                    .saveAsTable("dws_orders_monthly_summary")
+                    .option("path", table_location) \
+                    .saveAsTable(f"dws_db.{table_name}")
                 
-                # 执行表修复和刷新
-                try:
-                    spark.sql("MSCK REPAIR TABLE dws_db.dws_orders_monthly_summary")
-                    logging.info("🔧 Executed MSCK REPAIR for dws_orders_monthly_summary")
-                except Exception as repair_e:
-                    logging.warning(f"⚠️  MSCK REPAIR failed for dws_orders_monthly_summary: {repair_e}")
-                
-                spark.sql("REFRESH TABLE dws_db.dws_orders_monthly_summary")
-                
-                # 验证表创建成功
-                try:
-                    row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_orders_monthly_summary").collect()[0]['cnt']
-                    tables_created_list.append("dws_orders_monthly_summary")
-                    logging.info(f"✅ Monthly aggregation complete and loaded. Row count: {row_count}")
-                except Exception as count_e:
-                    logging.error(f"❌ Failed to count rows in dws_orders_monthly_summary: {count_e}")
-                    tables_created_list.append("dws_orders_monthly_summary")
-                    logging.warning("⚠️  Added table to created list despite count failure")
+                # 刷新元数据并验证
+                row_count = refresh_dws_metadata(table_name, batch_date)
+                tables_created_list.append(table_name)
+                logging.info(f"✅ Monthly aggregation complete and loaded. Row count: {row_count}")
                     
             except Exception as e:
                 logging.error(f"❌ Failed to create monthly summary table: {e}")
@@ -537,29 +586,23 @@ def run_dws_orders_analytics_etl(**context):
                 logging.warning("⚠️  Customer analytics aggregation resulted in 0 records")
                 # 仍然创建空表以保持一致性
             
+            # DWS 客户分析表元数据清理和写入
+            table_name = "dws_customer_analytics"
+            table_location = "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_customer_analytics"
+            
+            # 使用通用的清理函数
+            cleanup_dws_metadata(table_name, batch_date, table_location)
+            
+            # 写入数据
             customer_analytics_with_dt = customer_analytics.withColumn("dt", lit(batch_date))
             customer_analytics_with_dt.write.mode("overwrite").partitionBy("dt").format("parquet") \
-                .option("path", "hdfs://namenode:9000/user/hive/warehouse/dws_db.db/dws_customer_analytics") \
-                .saveAsTable("dws_customer_analytics")
+                .option("path", table_location) \
+                .saveAsTable(f"dws_db.{table_name}")
             
-            # 执行表修复和刷新
-            try:
-                spark.sql("MSCK REPAIR TABLE dws_db.dws_customer_analytics")
-                logging.info("🔧 Executed MSCK REPAIR for dws_customer_analytics")
-            except Exception as repair_e:
-                logging.warning(f"⚠️  MSCK REPAIR failed for dws_customer_analytics: {repair_e}")
-            
-            spark.sql("REFRESH TABLE dws_db.dws_customer_analytics")
-            
-            # 验证表创建成功
-            try:
-                row_count = spark.sql("SELECT COUNT(*) as cnt FROM dws_db.dws_customer_analytics").collect()[0]['cnt']
-                tables_created_list.append("dws_customer_analytics")
-                logging.info(f"✅ Customer analytics complete and loaded. Row count: {row_count}")
-            except Exception as count_e:
-                logging.error(f"❌ Failed to count rows in dws_customer_analytics: {count_e}")
-                tables_created_list.append("dws_customer_analytics")
-                logging.warning("⚠️  Added table to created list despite count failure")
+            # 刷新元数据并验证
+            row_count = refresh_dws_metadata(table_name, batch_date)
+            tables_created_list.append(table_name)
+            logging.info(f"✅ Customer analytics complete and loaded. Row count: {row_count}")
             
         except Exception as e:
             logging.error(f"❌ Failed to create customer analytics table: {e}")
