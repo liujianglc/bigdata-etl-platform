@@ -305,7 +305,7 @@ def run_dwd_orders_etl(**context):
                .withColumn("OrderDay", dayofmonth(col("OrderDate"))) \
                .withColumn("OrderDayOfWeek", dayofweek(col("OrderDate"))) \
                .withColumn("OrderQuarter", quarter(col("OrderDate"))) \
-               .withColumn("NetAmount", (col("TotalAmount") - col("Discount")).cast(DecimalType(10,2))) \
+               .withColumn("NetAmount", col("TotalAmount").cast(DecimalType(10,2)) - col("Discount").cast(DecimalType(10,2))) \
                .withColumn("OrderSizeCategory",
                          when(col("TotalAmount") >= 10000, "Large")
                          .when(col("TotalAmount") >= 5000, "Medium")
@@ -351,6 +351,9 @@ def run_dwd_orders_etl(**context):
         context['task_instance'].xcom_push(key='transform_stats', value=transform_stats)
 
         logging.info("Enforcing final schema to ensure consistency before loading...")
+        # Additional safeguard to ensure NetAmount is properly cast to DecimalType(10,2)
+        df = df.withColumn("NetAmount", col("NetAmount").cast(DecimalType(10,2)))
+        
         final_col_order = [field.name for field in transformed_schema.fields]
         df = df.select(*final_col_order)
         logging.info("✅ Final schema enforced.")
