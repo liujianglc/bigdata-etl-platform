@@ -367,7 +367,7 @@ def run_dwd_orderdetails_etl(**context):
         cat_map = create_map([lit(x) for c in maps['product_category_mapping'].items() for x in c])
 
         df = df.fillna({'ProductName':'Unknown Product','ProductCategory':'Unknown Category','WarehouseName':'Unknown Warehouse'}).withColumn("OrderDetailStatus", coalesce(status_map[col("Status")], col("Status"))).withColumn("ProductCategory", coalesce(cat_map[col("ProductCategory")], col("ProductCategory")))
-        df = df.withColumn("LineTotal", col("Quantity")*col("UnitPrice")).withColumn("DiscountAmount", col("LineTotal")*col("Discount")/100).withColumn("NetAmount", col("LineTotal")-col("DiscountAmount"))
+        df = df.withColumn("LineTotal", (col("Quantity")*col("UnitPrice")).cast(DecimalType(10,2))).withColumn("DiscountAmount", (col("LineTotal")*col("Discount")/100).cast(DecimalType(10,2))).withColumn("NetAmount", (col("LineTotal")-col("DiscountAmount")).cast(DecimalType(10,2)))
         df = df.withColumn("PriceCategory", when(col("UnitPrice")>=1000,"Premium").when(col("UnitPrice")>=500,"High").otherwise("Medium")).withColumn("IsHighValue", when(col("NetAmount")>=10000,True).otherwise(False)).withColumn("IsDiscounted", when(col("Discount") > 0, True).otherwise(False))
         win = Window.partitionBy("WarehouseName")
         df = df.withColumn("WarehouseEfficiency", (spark_sum(when(col("OrderDetailStatus")=='Delivered',1).otherwise(0)).over(win)/spark_count(lit(1)).over(win))*100)

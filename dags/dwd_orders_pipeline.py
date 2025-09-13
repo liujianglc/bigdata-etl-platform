@@ -305,7 +305,7 @@ def run_dwd_orders_etl(**context):
                .withColumn("OrderDay", dayofmonth(col("OrderDate"))) \
                .withColumn("OrderDayOfWeek", dayofweek(col("OrderDate"))) \
                .withColumn("OrderQuarter", quarter(col("OrderDate"))) \
-               .withColumn("NetAmount", (col("TotalAmount") - col("Discount"))) \
+               .withColumn("NetAmount", (col("TotalAmount") - col("Discount")).cast(DecimalType(10,2))) \
                .withColumn("OrderSizeCategory",
                          when(col("TotalAmount") >= 10000, "Large")
                          .when(col("TotalAmount") >= 5000, "Medium")
