@@ -88,12 +88,20 @@ def fix_specific_partition():
                 # 创建备份路径
                 backup_partition = problem_partition + "_backup_" + datetime.now().strftime('%Y%m%d_%H%M%S')
                 
+                # 刷新表缓存以避免文件锁定问题
+                logging.info("刷新Hive表缓存")
+                spark.sql("REFRESH TABLE dwd_db.dwd_orders")
+                spark.catalog.clearCache()
+                
                 # 备份原始分区
                 logging.info("备份原始分区到: %s", backup_partition)
                 df.write \
                     .mode("overwrite") \
                     .option("compression", "snappy") \
                     .parquet(backup_partition)
+                
+                # 再次刷新缓存，确保没有文件锁定
+                spark.catalog.clearCache()
                 
                 # 写入修复后的数据
                 logging.info("写入修复后的数据")
@@ -102,7 +110,12 @@ def fix_specific_partition():
                     .option("compression", "snappy") \
                     .parquet(problem_partition)
                 
-                # 验证修复结果
+                # 验证修复结果 - 先刷新缓存再读取
+                logging.info("刷新缓存并验证修复结果")
+                spark.catalog.clearCache()
+                spark.sql(f"REFRESH TABLE dwd_db.dwd_orders")
+                spark.sql(f"REFRESH TABLE dwd_db.dwd_orders PARTITION (dt='{partition_date}')")
+                
                 df_verify = spark.read.parquet(problem_partition)
                 verify_count = df_verify.count()
                 original_count = df.count()
@@ -129,14 +142,25 @@ def fix_specific_partition():
             except Exception as read_error:
                 logging.error("读取分区 %s 时出错: %s", partition_date, str(read_error))
                 
+                # 检查是否是文件不存在错误
+                if "SparkFileNotFoundException" in str(read_error) or "File does not exist" in str(read_error):
+                    logging.error("检测到文件不存在错误，建议执行以下步骤:")
+                    logging.error("1. 手动检查HDFS路径是否存在: hdfs dfs -ls %s", problem_partition)
+                    logging.error("2. 如果文件缺失，考虑重新运行该分区的DAG任务")
+                    logging.error("3. 或者使用Airflow backfill命令重新生成该分区数据")
+                
                 # 尝试删除有问题的分区并重新生成
                 logging.info("尝试删除有问题的分区 %s...", partition_date)
                 try:
+                    # 先刷新缓存
+                    spark.catalog.clearCache()
+                    spark.sql("REFRESH TABLE dwd_db.dwd_orders")
+                    
                     # 删除分区数据
                     drop_sql = "ALTER TABLE dwd_db.dwd_orders DROP IF EXISTS PARTITION (dt='{}')".format(partition_date)
                     spark.sql(drop_sql)
                     logging.info("已删除有问题的分区 %s", partition_date)
-                    failed_partitions.append(partition_date + " (已删除)")
+                    failed_partitions.append(partition_date + " (已删除，需要重新生成)")
                     
                 except Exception as drop_error:
                     logging.error("删除分区 %s 时出错: %s", partition_date, str(drop_error))
