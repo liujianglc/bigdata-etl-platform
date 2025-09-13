@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 自动检测和修复所有NetAmount列schema问题的分区
 
