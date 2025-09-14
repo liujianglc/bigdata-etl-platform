@@ -5,6 +5,7 @@ from airflow.operators.dummy import DummyOperator
 import logging
 import os
 import yaml
+from pyspark.sql.types import DecimalType
 
 # =============================================================================
 # DEFAULT ARGS
@@ -267,7 +268,14 @@ def run_dwd_orderdetails_etl(**context):
                     try:
                         where_clause = f"WHERE dt = '{partition}'" if partition else ""
                         total_query = f"SELECT COUNT(*) as total FROM {table} {where_clause}"
-                        unique_query = f"SELECT COUNT(DISTINCT {table.split('.')[1][:-1]}ID) as unique FROM {table} {where_clause}"
+                        table_name = table.split('.')[1]
+                        if table_name == 'Factories':
+                            column_name = 'FactoryID'
+                        elif table_name == 'Warehouses':
+                            column_name = 'WarehouseID'
+                        else:
+                            column_name = f"{table_name[:-1]}ID"
+                        unique_query = f"SELECT COUNT(DISTINCT {column_name}) as unique FROM {table} {where_clause}"
                         
                         total = spark.sql(total_query).collect()[0]['total']
                         unique = spark.sql(unique_query).collect()[0]['unique']
