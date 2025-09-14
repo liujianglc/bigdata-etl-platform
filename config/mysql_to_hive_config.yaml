@@ -10,7 +10,7 @@ tables:
     hive_table: ods.Orders
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: full # incremental  # ✅ 事务数据用增量同步
+    sync_mode: incremental  # ✅ 事务数据用增量同步
     enabled: true
     primary_key: "OrderID"
 
@@ -18,7 +18,7 @@ tables:
     hive_table: ods.OrderDetails
     incremental_column: UpdatedDate
     partition_column: dt
-    sync_mode: full #incremental  # ✅ 事务数据用增量同步
+    sync_mode: incremental  # ✅ 事务数据用增量同步
     enabled: true
     primary_key: "OrderDetailID"
     
@@ -26,7 +26,7 @@ tables:
     hive_table: ods.InventoryTransactions
     incremental_column: CreatedDate
     partition_column: dt
-    sync_mode: full #incremental  # ✅ 事务数据用增量同步
+    sync_mode: incremental  # ✅ 事务数据用增量同步
     enabled: true
     primary_key: "TransactionID"
 
