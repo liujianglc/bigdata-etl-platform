@@ -81,6 +81,7 @@ def get_table_partition_strategy(spark, table_name, target_date, config):
 # =============================================================================
 def run_dwd_orderdetails_etl(**context):
     from pyspark.sql import SparkSession, Window
+    from pyspark.sql.types import DecimalType
     from pyspark.sql.functions import (
         col, when, year, month, dayofmonth, dayofweek, quarter, coalesce, lit, 
         min, max, current_timestamp, length, avg, sum as spark_sum, count as spark_count,
